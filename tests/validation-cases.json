@@ -1,0 +1,16 @@
+[
+  { "path": ["network", "dns"], "value": "999.1.1.1", "valid": false },
+  { "path": ["network", "dns"], "value": "1.2.3", "valid": false },
+  { "path": ["network", "dns"], "value": "01.2.3.4", "valid": false },
+  { "path": ["network", "dns"], "value": "2001:db8::1", "valid": true },
+  { "path": ["network", "dns"], "value": "::ffff:192.0.2.1", "valid": true },
+  { "path": ["network", "dns"], "value": "1::2::3", "valid": false },
+  { "path": ["network", "dns"], "value": ":::1", "valid": false },
+  { "path": ["network", "dns"], "value": null, "valid": true },
+  { "path": ["runner", "cpus"], "value": "0", "valid": false },
+  { "path": ["runner", "cpus"], "value": "0.5", "valid": true },
+  { "path": ["runner", "memory"], "value": "0g", "valid": false },
+  { "path": ["runner", "defaultJobImage"], "value": "docker.io/library/node:latest", "valid": false },
+  { "path": ["runner", "allowedImages"], "value": [], "valid": false },
+  { "path": ["gitlab", "healthUrl"], "value": "https://other.example/", "valid": false }
+]

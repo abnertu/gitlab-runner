@@ -1,0 +1,48 @@
+{
+  "nodes": {
+    "nix-adapter": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1790932063,
+        "narHash": "sha256-PZNIw1S/Br5J/Nh+X030pJFjYcyD0c0kvpmPTxrirHk=",
+        "owner": "gin31259461",
+        "repo": "nix-adapter",
+        "rev": "197691e8a92ce2ea26ee24330a24be8ecde66b15",
+        "type": "github"
+      },
+      "original": {
+        "owner": "gin31259461",
+        "repo": "nix-adapter",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1790822859,
+        "narHash": "sha256-69xHQhAeMAD2wDXO7T2pcOZIF9Sga2W+JkmY2a11Ops=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "c59305bab2065cfecc4944690d9eedbb56f3a9fa",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "nix-adapter": "nix-adapter",
+        "nixpkgs": "nixpkgs"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
