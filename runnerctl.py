@@ -22,6 +22,7 @@ from typing import Any, Callable
 
 
 from dataclasses import dataclass
+from runner_config import detect_platform, load_instances, platform_paths
 from runner_model import (
     RunnerError,
     validate_instances,
@@ -470,7 +471,7 @@ def _reconcile_impl(
             service_name = instance["runner"]["serviceName"]
             unit_changed = atomic_write(
                 unit_dir / f"{service_name}.service",
-                render_service(instance),
+                render_service(instance, platform),
                 mode=0o600,
                 uid=entry.pw_uid,
                 gid=entry.pw_gid,
@@ -898,7 +899,19 @@ def status(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, required=True, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "-c",
+        "--config",
+        type=Path,
+        action="append",
+        required=True,
+        metavar="FILE",
+        help="instance file named after its environment, e.g. frontend.toml; repeat per instance",
+    )
+    parser.add_argument(
+        "--platform",
+        help="host platform for executable paths; detected from /etc/os-release by default",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("validate")
     for command in ("check", "reconcile", "register", "verify", "status"):
@@ -909,15 +922,15 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    document = json.loads(args.config.read_text())
-    instances = document["instances"]
-    platform = document["platform"]
+    # Every file loads, even for one instance: IDs and names must not collide.
+    instances = load_instances(args.config)
     validate_instances(instances)
     if args.command == "validate":
         print("GitLab Runner configuration is valid")
         return 0
 
     instance = select_instance(instances, args.instance)
+    platform = platform_paths(args.platform or detect_platform())
     if args.command == "check":
         check(args.instance, instance, platform)
     elif args.command == "status":

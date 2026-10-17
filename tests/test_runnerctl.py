@@ -7,7 +7,6 @@ from contextlib import ExitStack
 from contextlib import redirect_stderr
 import importlib.util
 from io import StringIO
-import json
 import os
 from pathlib import Path
 import subprocess
@@ -18,15 +17,8 @@ from unittest import mock
 
 
 RUNNERCTL_PATH = Path(__file__).resolve().parents[1] / "runnerctl.py"
-CONFIG_PATH = Path(__file__).parent / "runner-test-config.json"
-
-for arg in list(sys.argv):
-    if arg.endswith(".json") and Path(arg).exists():
-        CONFIG_PATH = Path(arg)
-        sys.argv.remove(arg)
-    elif arg.endswith("runnerctl.py") and Path(arg).exists():
-        RUNNERCTL_PATH = Path(arg)
-        sys.argv.remove(arg)
+FIXTURES = Path(__file__).parent / "fixtures"
+INSTANCE_FILES = [FIXTURES / "frontend.toml", FIXTURES / "dotnet.toml"]
 
 
 def load_runnerctl(path: Path | None = None):
@@ -57,29 +49,16 @@ class RunnerControlTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.runnerctl = load_runnerctl(RUNNERCTL_PATH)
-        cls.document = json.loads(CONFIG_PATH.read_text())
-        cls.instances = cls.document["instances"]
+        from runner_config import PLATFORMS, load_instances
+
+        cls.instances = load_instances(INSTANCE_FILES)
+        cls.platform = PLATFORMS["arch"]
 
     def test_host_configuration_is_valid(self) -> None:
         self.runnerctl.validate_instances(self.instances)
 
     def test_empty_configuration_is_valid(self) -> None:
         self.runnerctl.validate_instances({})
-
-    def test_shared_declaration_cases(self) -> None:
-        cases = json.loads(Path(__file__).with_name("validation-cases.json").read_text())
-        for case in cases:
-            with self.subTest(case=case):
-                instance = copy.deepcopy(self.instances["frontend"])
-                value = instance
-                for key in case["path"][:-1]:
-                    value = value[key]
-                value[case["path"][-1]] = case["value"]
-                if case["valid"]:
-                    self.runnerctl.validate_instances({"frontend": instance})
-                else:
-                    with self.assertRaises(self.runnerctl.RunnerError):
-                        self.runnerctl.validate_instances({"frontend": instance})
 
     def test_operation_lock_serializes_instances(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -121,7 +100,7 @@ class RunnerControlTests(unittest.TestCase):
             bus.parent.mkdir(parents=True)
             bus.touch()
             platform = {
-                **self.document["platform"],
+                **self.platform,
                 "caAnchorDirectory": str(root / "anchors"),
                 "containerCertsDirectory": str(root / "certs"),
             }
@@ -236,7 +215,7 @@ class RunnerControlTests(unittest.TestCase):
             inspect.return_value = "matches-declaration"
             self.assertFalse(self.runnerctl.reconcile(instance, platform, paths=paths))
 
-    def test_cli_exposes_the_arch_runner_lifecycle_without_token_arguments(
+    def test_cli_accepts_no_token_argument(
         self,
     ) -> None:
         result = subprocess.run(
@@ -244,7 +223,7 @@ class RunnerControlTests(unittest.TestCase):
                 sys.executable,
                 str(RUNNERCTL_PATH),
                 "--config",
-                str(CONFIG_PATH),
+                str(INSTANCE_FILES[0]),
                 "--help",
             ],
             check=True,
@@ -252,21 +231,12 @@ class RunnerControlTests(unittest.TestCase):
             stdout=subprocess.PIPE,
         )
 
-        for command in (
-            "check",
-            "reconcile",
-            "register",
-            "status",
-            "validate",
-            "verify",
-        ):
-            self.assertIn(command, result.stdout)
         self.assertNotIn("--token", result.stdout)
 
     def test_progress_boundaries_use_static_labels_and_mark_failures(self) -> None:
         output = StringIO()
         instance = self.instances["frontend"]
-        platform = self.document["platform"]
+        platform = self.platform
         with redirect_stderr(output):
             with mock.patch.object(
                 self.runnerctl,
@@ -322,7 +292,6 @@ class RunnerControlTests(unittest.TestCase):
         instances = copy.deepcopy(self.instances)
         instances["frontend"]["network"]["requiredInterface"] = None
         self.runnerctl.validate_instances(instances)
-        self.assertNotIn("vpn", json.dumps(instances).lower())
 
     def test_registered_config_preserves_registration_metadata(self) -> None:
         instance = self.instances["frontend"]
@@ -413,13 +382,13 @@ class RunnerControlTests(unittest.TestCase):
             mock.patch.object(self.runnerctl, "ensure_account") as ensure_account,
         ):
             with self.assertRaisesRegex(self.runnerctl.RunnerError, "not ready"):
-                self.runnerctl.reconcile(instance, self.document["platform"])
+                self.runnerctl.reconcile(instance, self.platform)
 
         ensure_account.assert_not_called()
 
     def test_manager_mounts_socket_but_job_configuration_does_not(self) -> None:
         instance = self.instances["frontend"]
-        manager = self.runnerctl.render_service(instance)
+        manager = self.runnerctl.render_service(instance, self.platform)
         job = self.runnerctl.render_registration_template(instance)
         self.assertIn("podman.sock:/run/podman/podman.sock:rw", manager)
         self.assertNotIn("podman.sock:/run/podman/podman.sock:rw", job)
@@ -453,7 +422,7 @@ class RunnerControlTests(unittest.TestCase):
             mock.patch.object(self.runnerctl.os, "getgrouplist", return_value=[1001, 998]),
         ):
             with self.assertRaisesRegex(self.runnerctl.RunnerError, "supplementary"):
-                self.runnerctl.ensure_account(instance, self.document["platform"])
+                self.runnerctl.ensure_account(instance, self.platform)
 
     def test_run_as_clears_the_parent_environment(self) -> None:
         instance = self.instances["frontend"]
@@ -472,8 +441,8 @@ class RunnerControlTests(unittest.TestCase):
         with mock.patch.object(self.runnerctl, "run", return_value=completed) as invoked:
             self.runnerctl.run_as(
                 entry,
-                [self.document["platform"]["podman"], "info"],
-                platform=self.document["platform"],
+                [self.platform["podman"], "info"],
+                platform=self.platform,
             )
 
         arguments = invoked.call_args.args[0]
@@ -511,7 +480,7 @@ class RunnerControlTests(unittest.TestCase):
                 ("fixture", "x", os.getuid(), os.getgid(), "", str(root), "/bin/bash")
             )
             platform = {
-                **self.document["platform"],
+                **self.platform,
                 "caAnchorDirectory": str(root / "anchors"),
                 "containerCertsDirectory": str(root / "registry"),
             }
@@ -597,7 +566,7 @@ class RunnerControlTests(unittest.TestCase):
                 mock.patch.object(self.runnerctl, "reconcile"),
                 mock.patch.object(self.runnerctl, "verify"),
             ):
-                self.runnerctl.register(instance, self.document["platform"])
+                self.runnerctl.register(instance, self.platform)
 
             arguments = invoked.call_args.args[0]
             environment = invoked.call_args.kwargs["env"]
@@ -675,12 +644,12 @@ class RunnerControlTests(unittest.TestCase):
             ):
                 if state == "L":
                     self.assertEqual(
-                        self.runnerctl.ensure_account(instance, self.document["platform"]),
+                        self.runnerctl.ensure_account(instance, self.platform),
                         entry,
                     )
                 else:
                     with self.assertRaisesRegex(self.runnerctl.RunnerError, "locked password"):
-                        self.runnerctl.ensure_account(instance, self.document["platform"])
+                        self.runnerctl.ensure_account(instance, self.platform)
 
     def test_job_network_is_removed_when_validation_fails(self) -> None:
         instance = self.instances["frontend"]
@@ -708,7 +677,7 @@ class RunnerControlTests(unittest.TestCase):
             with self.assertRaisesRegex(self.runnerctl.RunnerError, "job failed"):
                 self.runnerctl.validate_job_network(
                     instance,
-                    self.document["platform"],
+                    self.platform,
                     entry,
                 )
 

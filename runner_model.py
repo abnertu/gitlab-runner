@@ -33,6 +33,10 @@ def toml_string(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+def toml_array(values: list[str]) -> str:
+    return json.dumps(values, ensure_ascii=False, separators=(",", ":"))
+
+
 def gitlab_hostname(instance: dict[str, Any]) -> str:
     hostname = urlparse(instance["gitlab"]["url"]).hostname
     if hostname is None:
@@ -66,6 +70,10 @@ def validate_instances(instances: dict[str, Any]) -> None:
         service_names.add(runner["serviceName"])
         uids.add(account["uid"])
 
+        if not runner["name"]:
+            raise RunnerError(f"{instance_name} runner name must not be empty")
+        if account["uid"] <= 0:
+            raise RunnerError(f"{instance_name} uid must be a positive integer")
         if account["home"] != f"/home/{account['user']}":
             raise RunnerError(f"{instance_name} must use its dedicated /home directory")
         gitlab_url = urlparse(gitlab["url"])
@@ -126,11 +134,11 @@ def validate_instances(instances: dict[str, Any]) -> None:
             except ValueError as error:
                 raise RunnerError(f"{instance_name} dns must be an IP address") from error
         ca_certificate = gitlab.get("caCertificate")
-        if ca_certificate is not None and Path(ca_certificate).suffix.lower() not in {
-            ".crt",
-            ".pem",
-        }:
-            raise RunnerError(f"{instance_name} CA certificate must use .crt or .pem")
+        if ca_certificate is not None:
+            if Path(ca_certificate).suffix.lower() not in {".crt", ".pem"}:
+                raise RunnerError(f"{instance_name} CA certificate must use .crt or .pem")
+            if not Path(ca_certificate).is_file():
+                raise RunnerError(f"{instance_name} CA certificate is missing: {ca_certificate}")
 
     names = sorted(instances)
     for index, left_name in enumerate(names):
@@ -142,6 +150,56 @@ def validate_instances(instances: dict[str, Any]) -> None:
                     raise RunnerError(
                         f"{left_name} and {right_name} have overlapping {range_name} ranges"
                     )
+
+
+def render_artifacts(instance: dict[str, Any]) -> dict[str, Any]:
+    """Public, platform-independent Runner configuration; never contains tokens."""
+    gitlab = instance["gitlab"]
+    runner = instance["runner"]
+    dns = instance["network"]["dns"]
+    template = [
+        "[[runners]]",
+        f"  name = {toml_string(runner['name'])}",
+        '  executor = "docker"',
+        '  environment = ["FF_NETWORK_PER_BUILD=1"]',
+        "",
+        "  [runners.docker]",
+        '    host = "unix:///run/podman/podman.sock"',
+        f"    image = {toml_string(runner['defaultJobImage'])}",
+        "    privileged = false",
+        f"    cpus = {toml_string(runner['cpus'])}",
+        f"    memory = {toml_string(runner['memory'])}",
+        f"    shm_size = {runner['shmSizeBytes']}",
+        f"    pull_policy = {toml_string(runner['pullPolicy'])}",
+        '    volumes = ["/cache"]',
+        f"    allowed_images = {toml_array(runner['allowedImages'])}",
+        f"    allowed_services = {toml_array(runner['allowedServices'])}",
+    ]
+    if dns is not None:
+        template.append(f"    dns = [{toml_string(dns)}]")
+    hostname = re.match(r"https://([^/:]+)", gitlab["url"])
+    ca_line = ""
+    if gitlab["caCertificate"] is not None and hostname is not None:
+        certificate = f"/etc/gitlab-runner/certs/{hostname.group(1)}.crt"
+        ca_line = f"  tls-ca-file = {toml_string(certificate)}\n"
+    return {
+        "registrationTemplate": "\n".join(template) + "\n",
+        "configPolicy": {
+            "configPrefix": f"concurrent = {runner['concurrent']}\ncheck_interval = 3\n"
+            "shutdown_timeout = 30\n",
+            "registrationPrefix": "\n".join(
+                [
+                    "[[runners]]",
+                    f"  name = {toml_string(runner['name'])}",
+                    f"  url = {toml_string(gitlab['url'])}",
+                    '  executor = "docker"',
+                    "@REGISTRATION_METADATA@",
+                ]
+            )
+            + "\n",
+            "caLine": ca_line,
+        },
+    }
 
 
 def render_registration_template(instance: dict[str, Any]) -> str:
@@ -173,8 +231,58 @@ def render_config(instance: dict[str, Any], metadata: dict[str, str]) -> str:
     )
 
 
-def render_service(instance: dict[str, Any]) -> str:
-    return instance["artifacts"]["serviceUnit"]
+def render_service(instance: dict[str, Any], platform: dict[str, str]) -> str:
+    """The manager's user unit; host executable paths come from the platform."""
+    account = instance["account"]
+    runner = instance["runner"]
+    dns = instance["network"]["dns"]
+    podman = platform["podman"]
+    service = runner["serviceName"]
+    runtime = f"/run/user/{account['uid']}"
+    root = f"{account['home']}/gitlab-runner"
+    lines = [
+        "[Unit]",
+        f"Description=GitLab Runner manager for {service}",
+        "Wants=network-online.target",
+        "After=network-online.target podman.socket",
+        "Requires=podman.socket",
+        "",
+        "[Service]",
+        "Type=simple",
+        f"Environment=XDG_RUNTIME_DIR={runtime}",
+        f"Environment=DBUS_SESSION_BUS_ADDRESS=unix:path={runtime}/bus",
+        f"ExecStartPre=-{podman} rm --force {service}",
+        f"ExecStart={podman} run \\",
+        "  --rm \\",
+        f"  --name {service} \\",
+        "  --network host \\",
+        "  --image-volume=ignore \\",
+        "  --security-opt label=disable \\",
+        "  --stop-signal SIGQUIT \\",
+        f"  --volume {root}/config:/etc/gitlab-runner:rw \\",
+        f"  --volume {root}/cache:/cache:rw \\",
+        f"  --volume {runtime}/podman/podman.sock:/run/podman/podman.sock:rw \\",
+        "  --env DOCKER_HOST=unix:///run/podman/podman.sock \\",
+    ]
+    if dns is not None:
+        lines.append(f"  --dns {dns} \\")
+    lines += [
+        f"  {runner['managerImage']} \\",
+        "  run \\",
+        "  --user=gitlab-runner \\",
+        "  --working-directory=/home/gitlab-runner",
+        f"ExecStop=-{podman} stop --time 30 {service}",
+        f"ExecStopPost=-{podman} rm --force {service}",
+        "Restart=always",
+        "RestartSec=5",
+        "TimeoutStartSec=120",
+        "TimeoutStopSec=45",
+        "Delegate=yes",
+        "",
+        "[Install]",
+        "WantedBy=default.target",
+    ]
+    return "\n".join(lines) + "\n"
 
 
 def manager_matches(instance, uid, state, image_id):

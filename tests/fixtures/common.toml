@@ -1,0 +1,10 @@
+# Shared fixture settings; each instance file extends it.
+provider = "gitlab"
+
+[gitlab]
+url = "https://gitlab.example"
+health_url = "https://gitlab.example/users/sign_in"
+
+[network]
+required_interface = "tailscale0"
+dns = "100.100.100.100"

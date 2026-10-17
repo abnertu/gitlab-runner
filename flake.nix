@@ -38,6 +38,7 @@
             '';
             pythonImportsCheck = [
               "runnerctl"
+              "runner_config"
               "runner_model"
             ];
           };
@@ -76,7 +77,7 @@
               python
             ];
           } ''
-            pyright --project ${./.} ${./runnerctl.py} ${./runner_model.py}
+            pyright --project ${./.} ${./runnerctl.py} ${./runner_config.py} ${./runner_model.py}
             touch "$out"
           '';
         }

@@ -16,13 +16,13 @@ dependencies = [
 runnerctl = "runnerctl:main_cli"
 
 [tool.setuptools]
-py-modules = ["runnerctl", "runner_model"]
+py-modules = ["runnerctl", "runner_config", "runner_model"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
 
 [tool.pyright]
-include = ["runnerctl.py", "runner_model.py"]
+include = ["runnerctl.py", "runner_config.py", "runner_model.py"]
 pythonVersion = "3.11"
 typeCheckingMode = "basic"

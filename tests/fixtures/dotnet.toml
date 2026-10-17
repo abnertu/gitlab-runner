@@ -1,0 +1,16 @@
+extends = "common.toml"
+uid = 1002
+subordinate_id_start = 231072
+
+[runner]
+name = "A-dotnet-podman"
+cpus = "4"
+memory = "6g"
+shm_size_bytes = 1073741824
+default_job_image = "mcr.microsoft.com/dotnet/sdk:10.0.302-noble"
+allowed_images = [
+  "mcr.microsoft.com/dotnet/sdk:*",
+  "mcr.microsoft.com/dotnet/runtime:*",
+  "mcr.microsoft.com/dotnet/aspnet:*",
+]
+allowed_services = ["mcr.microsoft.com/mssql/server:*"]

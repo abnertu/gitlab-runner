@@ -1,0 +1,16 @@
+extends = "common.toml"
+uid = 1001
+subordinate_id_start = 165536
+
+[runner]
+name = "A-frontend-podman"
+cpus = "2"
+memory = "4g"
+shm_size_bytes = 1073741824
+default_job_image = "docker.io/library/node:22.22.0-bookworm"
+allowed_images = [
+  "docker.io/library/node:*",
+  "mcr.microsoft.com/playwright:*",
+  "docker.io/curlimages/curl:*",
+]
+allowed_services = []
