@@ -78,7 +78,7 @@ def run(
 
 
 @contextmanager
-def operation_lock(path: Path = Path("/run/lock/nix-config-runner.lock")):
+def operation_lock(path: Path = Path("/run/lock/runnerctl.lock")):
     """Serialize our mutations across instances, including shared sub-ID files."""
     with _operation_lock(path, label="Runner operation"):
         yield
@@ -267,9 +267,9 @@ def reconcile_ca(
     hostname = gitlab_hostname(instance)
     service_name = instance["runner"]["serviceName"]
     manager_certificate = config_dir / "certs" / f"{hostname}.crt"
-    system_certificate = Path(platform["caAnchorDirectory"]) / f"nix-config-{service_name}.crt"
+    system_certificate = Path(platform["caAnchorDirectory"]) / f"runnerctl-{service_name}.crt"
     registry_certificate = (
-        Path(platform["containerCertsDirectory"]) / hostname / f"nix-config-{service_name}.crt"
+        Path(platform["containerCertsDirectory"]) / hostname / f"runnerctl-{service_name}.crt"
     )
     source = instance["gitlab"].get("caCertificate")
     changed = False
