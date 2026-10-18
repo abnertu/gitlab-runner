@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
 import fnmatch
 import ipaddress
 import json
-from pathlib import Path
 import re
-from typing import Any
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
+from typing import Any, cast
 from urllib.parse import urlparse
-
 
 from nix_adapter.exceptions import Conflict
 from nix_adapter.system import ranges_overlap
@@ -38,7 +37,7 @@ def toml_array(values: list[str]) -> str:
 
 
 def gitlab_hostname(instance: dict[str, Any]) -> str:
-    hostname = urlparse(instance["gitlab"]["url"]).hostname
+    hostname = urlparse(str(instance["gitlab"]["url"])).hostname
     if hostname is None:
         raise RunnerError("GitLab URL does not contain a hostname")
     return hostname
@@ -76,8 +75,8 @@ def validate_instances(instances: dict[str, Any]) -> None:
             raise RunnerError(f"{instance_name} uid must be a positive integer")
         if account["home"] != f"/home/{account['user']}":
             raise RunnerError(f"{instance_name} must use its dedicated /home directory")
-        gitlab_url = urlparse(gitlab["url"])
-        health_url = urlparse(gitlab["healthUrl"])
+        gitlab_url = urlparse(str(gitlab["url"]))
+        health_url = urlparse(str(gitlab["healthUrl"]))
         if (
             gitlab_url.scheme != "https"
             or not gitlab_url.hostname
@@ -212,7 +211,7 @@ def render_config(instance: dict[str, Any], metadata: dict[str, str]) -> str:
     if "token" not in metadata:
         return config
     registration = policy["registrationPrefix"]
-    fields = []
+    fields: list[str] = []
     if "id" in metadata:
         fields.append(f"  id = {metadata['id']}")
     fields.append(f"  token = {toml_string(metadata['token'])}")
@@ -285,22 +284,24 @@ def render_service(instance: dict[str, Any], platform: dict[str, str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def manager_matches(instance, uid, state, image_id):
+def manager_matches(instance: dict[str, Any], uid: int, state: object, image_id: object) -> bool:
     """Evaluate only declared isolation facts; never return raw inspect data."""
     if not isinstance(state, dict) or not isinstance(image_id, str) or not image_id:
         return False
+    state = cast("dict[str, Any]", state)
     expected = {
         "/etc/gitlab-runner": f"{instance['account']['home']}/gitlab-runner/config",
         "/cache": f"{instance['account']['home']}/gitlab-runner/cache",
         "/run/podman/podman.sock": f"/run/user/{uid}/podman/podman.sock",
     }
-    mounts = state.get("mounts")
-    if not isinstance(mounts, list) or len(mounts) != len(expected):
+    mounts: object = state.get("mounts")
+    if not isinstance(mounts, list) or len(cast("list[object]", mounts)) != len(expected):
         return False
-    seen = set()
-    for mount in mounts:
-        if not isinstance(mount, dict):
+    seen: set[str] = set()
+    for item in cast("list[object]", mounts):
+        if not isinstance(item, dict):
             return False
+        mount = cast("dict[str, Any]", item)
         destination = mount.get("Destination")
         if (
             not isinstance(destination, str)

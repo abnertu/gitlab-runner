@@ -5,42 +5,46 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
-from datetime import datetime
-import tomllib
+import contextlib
 import grp
 import json
 import os
-from pathlib import Path
 import pwd
 import re
 import stat
 import subprocess
 import sys
 import time
-from typing import Any, Callable
-
-
+import tomllib
+from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
-from runner_config import detect_platform, load_instances, platform_paths
-from runner_model import (
-    RunnerError,
-    validate_instances,
-    gitlab_hostname,
-    render_registration_template,
-    render_config,
-    render_service,
-    manager_matches,
-)
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Literal, cast
+
 from nix_adapter import (
     atomic_write,
     ensure_directory,
     ensure_subordinate_range,
-    operation_lock as _operation_lock,
     read_managed,
     remove_managed_file,
 )
+from nix_adapter import (
+    operation_lock as _operation_lock,
+)
 from nix_adapter.progress import Progress
+
+from runner_config import detect_platform, load_instances, platform_paths
+from runner_model import (
+    RunnerError,
+    gitlab_hostname,
+    manager_matches,
+    render_config,
+    render_registration_template,
+    render_service,
+    validate_instances,
+)
 
 
 @dataclass(frozen=True)
@@ -50,6 +54,9 @@ class HostPaths:
     subuid: Path = Path("/etc/subuid")
     subgid: Path = Path("/etc/subgid")
     runtime: Path = Path("/run/user")
+
+
+DEFAULT_PATHS = HostPaths()
 
 
 def run(
@@ -94,10 +101,8 @@ def progress_task(scope: str, label: str, progress: Progress | None = None):
             yield current
     finally:
         if owner:
-            try:
+            with contextlib.suppress(Exception):
                 current.close()
-            except Exception:
-                pass
 
 
 def require_root() -> None:
@@ -134,7 +139,7 @@ def ensure_account(instance: dict[str, Any], platform: dict[str, str]) -> pwd.st
         except KeyError:
             owner = None
         if owner is not None:
-            raise RunnerError(f"UID {account['uid']} is already owned by {owner.pw_name}")
+            raise RunnerError(f"UID {account['uid']} is already owned by {owner.pw_name}") from None
         run(
             [
                 platform["useradd"],
@@ -175,21 +180,21 @@ def registration_metadata(config_path: Path) -> dict[str, str]:
         document = tomllib.loads(read_managed(config_path))
     except (ValueError, UnicodeError):
         raise RunnerError("dedicated Runner config is invalid TOML") from None
-    registrations = document.get("runners", [])
+    registrations: object = document.get("runners", [])
     if not isinstance(registrations, list):
         raise RunnerError("dedicated Runner registrations must be a list")
-    if len(registrations) > 1:
+    if len(cast("list[object]", registrations)) > 1:
         raise RunnerError("dedicated Runner config contains multiple registrations")
     if not registrations:
         return {}
-    runner = registrations[0]
-    if (
-        not isinstance(runner, dict)
-        or not isinstance(runner.get("token"), str)
-        or not runner["token"]
-    ):
+    first = cast("list[object]", registrations)[0]
+    if not isinstance(first, dict):
         raise RunnerError("dedicated Runner config contains an incomplete registration")
-    metadata = {"token": runner["token"]}
+    runner = cast("dict[str, Any]", first)
+    token = runner.get("token")
+    if not isinstance(token, str) or not token:
+        raise RunnerError("dedicated Runner config contains an incomplete registration")
+    metadata = {"token": token}
     if "id" in runner:
         if type(runner["id"]) is not int or runner["id"] <= 0:
             raise RunnerError("dedicated Runner registration has an invalid ID")
@@ -424,74 +429,71 @@ def _reconcile_impl(
     instance: dict[str, Any],
     platform: dict[str, str],
     *,
-    paths: HostPaths = HostPaths(),
+    paths: HostPaths = DEFAULT_PATHS,
     progress: Progress,
 ) -> bool:
     require_root()
     with progress.task("Checking prerequisites"):
         check_prerequisites(instance, platform)
 
-    with progress.task("Preparing account, sub-IDs and runtime"):
-        with progress.external_output():
-            entry = ensure_account(instance, platform)
-            account = instance["account"]
-            ensure_subordinate_range(paths.subuid, entry.pw_name, account["subUid"])
-            ensure_subordinate_range(paths.subgid, entry.pw_name, account["subGid"])
-            run([platform["loginctl"], "enable-linger", entry.pw_name])
-            run([platform["systemctl"], "start", f"user@{entry.pw_uid}.service"])
-            wait_for_path(paths.runtime / str(entry.pw_uid) / "bus")
-            verify_rootless_podman(entry, platform)
-            config_dir, _, unit_dir = ensure_directories(entry)
+    with progress.task("Preparing account, sub-IDs and runtime"), progress.external_output():
+        entry = ensure_account(instance, platform)
+        account = instance["account"]
+        ensure_subordinate_range(paths.subuid, entry.pw_name, account["subUid"])
+        ensure_subordinate_range(paths.subgid, entry.pw_name, account["subGid"])
+        run([platform["loginctl"], "enable-linger", entry.pw_name])
+        run([platform["systemctl"], "start", f"user@{entry.pw_uid}.service"])
+        wait_for_path(paths.runtime / str(entry.pw_uid) / "bus")
+        verify_rootless_podman(entry, platform)
+        config_dir, _, unit_dir = ensure_directories(entry)
     pending = config_dir / ".reconcile.pending"
 
     def mark_pending():
         atomic_write(pending, "pending\n", mode=0o600, uid=entry.pw_uid, gid=entry.pw_gid)
 
-    with progress.task("Reconciling trust and configuration"):
-        with progress.external_output():
-            ca_changed = reconcile_ca(instance, entry, config_dir, platform, mark_pending)
-            config_path = config_dir / "config.toml"
-            metadata = registration_metadata(config_path)
-            template_changed = atomic_write(
-                config_dir / "registration-template.toml",
-                render_registration_template(instance),
-                mode=0o600,
-                uid=entry.pw_uid,
-                gid=entry.pw_gid,
-                before_change=mark_pending,
-            )
-            config_changed = atomic_write(
-                config_path,
-                render_config(instance, metadata),
-                mode=0o600,
-                uid=entry.pw_uid,
-                gid=entry.pw_gid,
-                before_change=mark_pending,
-            )
-            service_name = instance["runner"]["serviceName"]
-            unit_changed = atomic_write(
-                unit_dir / f"{service_name}.service",
-                render_service(instance, platform),
-                mode=0o600,
-                uid=entry.pw_uid,
-                gid=entry.pw_gid,
-                before_change=mark_pending,
-            )
+    with progress.task("Reconciling trust and configuration"), progress.external_output():
+        ca_changed = reconcile_ca(instance, entry, config_dir, platform, mark_pending)
+        config_path = config_dir / "config.toml"
+        metadata = registration_metadata(config_path)
+        template_changed = atomic_write(
+            config_dir / "registration-template.toml",
+            render_registration_template(instance),
+            mode=0o600,
+            uid=entry.pw_uid,
+            gid=entry.pw_gid,
+            before_change=mark_pending,
+        )
+        config_changed = atomic_write(
+            config_path,
+            render_config(instance, metadata),
+            mode=0o600,
+            uid=entry.pw_uid,
+            gid=entry.pw_gid,
+            before_change=mark_pending,
+        )
+        service_name = instance["runner"]["serviceName"]
+        unit_changed = atomic_write(
+            unit_dir / f"{service_name}.service",
+            render_service(instance, platform),
+            mode=0o600,
+            uid=entry.pw_uid,
+            gid=entry.pw_gid,
+            before_change=mark_pending,
+        )
 
     retry_pending = pending.exists()
-    with progress.task("Preparing user services"):
-        with progress.external_output():
-            if unit_changed or retry_pending:
-                run_as(
-                    entry,
-                    [platform["systemctl"], "--user", "daemon-reload"],
-                    platform=platform,
-                )
+    with progress.task("Preparing user services"), progress.external_output():
+        if unit_changed or retry_pending:
             run_as(
                 entry,
-                [platform["systemctl"], "--user", "enable", "--now", "podman.socket"],
+                [platform["systemctl"], "--user", "daemon-reload"],
                 platform=platform,
             )
+        run_as(
+            entry,
+            [platform["systemctl"], "--user", "enable", "--now", "podman.socket"],
+            platform=platform,
+        )
     with progress.task("Preparing manager image"):
         image = instance["runner"]["managerImage"]
         image_exists = run_as(
@@ -509,38 +511,37 @@ def _reconcile_impl(
         elif image_exists.returncode != 0:
             raise RunnerError("unable to inspect the Runner manager image")
     service_unit = f"{service_name}.service"
-    with progress.task("Converging Runner service"):
-        with progress.external_output():
+    with progress.task("Converging Runner service"), progress.external_output():
+        run_as(
+            entry,
+            [platform["systemctl"], "--user", "enable", service_unit],
+            platform=platform,
+        )
+        service_active = run_as(
+            entry,
+            [platform["systemctl"], "--user", "is-active", service_unit],
+            platform=platform,
+            capture=True,
+            check=False,
+        )
+        manager_drift = (
+            service_active.returncode == 0
+            and inspect_manager(instance, platform, entry) != "matches-declaration"
+        )
+        if manager_drift:
+            mark_pending()
+        if service_active.returncode != 0:
             run_as(
                 entry,
-                [platform["systemctl"], "--user", "enable", service_unit],
+                [platform["systemctl"], "--user", "start", service_unit],
                 platform=platform,
             )
-            service_active = run_as(
+        elif retry_pending or image_pulled or manager_drift:
+            run_as(
                 entry,
-                [platform["systemctl"], "--user", "is-active", service_unit],
+                [platform["systemctl"], "--user", "restart", service_unit],
                 platform=platform,
-                capture=True,
-                check=False,
             )
-            manager_drift = (
-                service_active.returncode == 0
-                and inspect_manager(instance, platform, entry) != "matches-declaration"
-            )
-            if manager_drift:
-                mark_pending()
-            if service_active.returncode != 0:
-                run_as(
-                    entry,
-                    [platform["systemctl"], "--user", "start", service_unit],
-                    platform=platform,
-                )
-            elif retry_pending or image_pulled or manager_drift:
-                run_as(
-                    entry,
-                    [platform["systemctl"], "--user", "restart", service_unit],
-                    platform=platform,
-                )
     remove_managed_file(pending)
     return (
         retry_pending
@@ -558,7 +559,7 @@ def reconcile(
     instance: dict[str, Any],
     platform: dict[str, str],
     *,
-    paths: HostPaths = HostPaths(),
+    paths: HostPaths = DEFAULT_PATHS,
     progress: Progress | None = None,
 ) -> bool:
     with progress_task("runnerctl reconcile", "Reconciling Runner", progress) as current:
@@ -700,7 +701,9 @@ def validate_job_network(
         )
 
 
-def inspect_manager(instance, platform, entry):
+def inspect_manager(
+    instance: dict[str, Any], platform: dict[str, str], entry: pwd.struct_passwd
+) -> Literal["absent", "matches-declaration", "drifted"]:
     result = run_as(
         entry,
         [
@@ -742,15 +745,14 @@ def inspect_manager(instance, platform, entry):
 
 def _verify_impl(instance: dict[str, Any], platform: dict[str, str], *, progress: Progress) -> None:
     require_root()
-    with progress.task("Checking runtime and socket"):
-        with progress.external_output():
-            required_interface_is_up(instance["network"].get("requiredInterface"), platform["ip"])
-            entry = pwd.getpwnam(instance["account"]["user"])
-            verify_rootless_podman(entry, platform)
-            verify_aardvark(platform)
-            socket_path = Path(f"/run/user/{entry.pw_uid}/podman/podman.sock")
-            if not socket_path.exists() or not stat.S_ISSOCK(socket_path.stat().st_mode):
-                raise RunnerError(f"rootless Podman socket is unavailable for {entry.pw_name}")
+    with progress.task("Checking runtime and socket"), progress.external_output():
+        required_interface_is_up(instance["network"].get("requiredInterface"), platform["ip"])
+        entry = pwd.getpwnam(instance["account"]["user"])
+        verify_rootless_podman(entry, platform)
+        verify_aardvark(platform)
+        socket_path = Path(f"/run/user/{entry.pw_uid}/podman/podman.sock")
+        if not socket_path.exists() or not stat.S_ISSOCK(socket_path.stat().st_mode):
+            raise RunnerError(f"rootless Podman socket is unavailable for {entry.pw_name}")
     service_name = instance["runner"]["serviceName"]
     with progress.task("Checking registration and service"):
         metadata = registration_metadata(Path(entry.pw_dir) / "gitlab-runner/config/config.toml")
@@ -794,9 +796,8 @@ def _verify_impl(instance: dict[str, Any], platform: dict[str, str], *, progress
         )
     with progress.task("Checking GitLab health"):
         run(health_command(instance, platform), capture=True)
-    with progress.task("Checking disposable job network"):
-        with progress.external_output():
-            validate_job_network(instance, platform, entry)
+    with progress.task("Checking disposable job network"), progress.external_output():
+        validate_job_network(instance, platform, entry)
 
 
 def subordinate_range_matches(path: Path, user: str, desired: dict[str, int]) -> bool:

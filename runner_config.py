@@ -8,10 +8,10 @@ keys are rejected, so a typo never silently falls back to a default.
 
 from __future__ import annotations
 
-from pathlib import Path
 import re
 import tomllib
-from typing import Any
+from pathlib import Path
+from typing import Any, cast
 
 from runner_model import RunnerError, render_artifacts
 
@@ -112,7 +112,9 @@ def _check_schema(document: dict[str, Any], schema: dict[str, Any], context: str
         if isinstance(expected, dict):
             if not isinstance(value, dict):
                 raise RunnerError(f"{context}.{key} must be a table")
-            _check_schema(value, expected, f"{context}.{key}")
+            _check_schema(
+                cast("dict[str, Any]", value), cast("dict[str, Any]", expected), f"{context}.{key}"
+            )
         elif isinstance(value, bool) or not isinstance(value, expected):
             raise RunnerError(f"{context}.{key} must be a {expected.__name__}")
         elif expected is list and not all(isinstance(item, str) for item in value):

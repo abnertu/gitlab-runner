@@ -7,7 +7,7 @@ name = "gitlab-runnerctl"
 version = "0.1.0"
 description = "Manage dedicated rootless GitLab Runner instances"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
     "nix-adapter",
 ]
@@ -20,9 +20,14 @@ py-modules = ["runnerctl", "runner_config", "runner_model"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF"]
+# The formatter owns line length.
+ignore = ["E501"]
 
 [tool.pyright]
-include = ["runnerctl.py", "runner_config.py", "runner_model.py"]
-pythonVersion = "3.11"
-typeCheckingMode = "basic"
+include = ["runnerctl.py", "runner_config.py", "runner_model.py", "tests"]
+pythonVersion = "3.13"
+typeCheckingMode = "strict"

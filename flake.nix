@@ -66,7 +66,7 @@
           source-format = pkgs.runCommand "gitlab-runnerctl-source-format" {
             nativeBuildInputs = [ pkgs.ruff ];
           } ''
-            ruff check --no-cache --select F ${./.}
+            ruff check --no-cache ${./.}
             ruff format --no-cache --check ${./.}
             touch "$out"
           '';

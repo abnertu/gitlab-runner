@@ -1,12 +1,13 @@
+# pyright: standard
 """Instance files: loading, inheritance, schema and declaration validation."""
 
 from __future__ import annotations
 
 import copy
-from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from pathlib import Path
 
 from runner_config import load_instances
 from runner_model import RunnerError, validate_instances

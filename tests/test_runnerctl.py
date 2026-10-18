@@ -1,20 +1,19 @@
+# pyright: standard
 #!/usr/bin/env python3
 
 from __future__ import annotations
 
 import copy
-from contextlib import ExitStack
-from contextlib import redirect_stderr
 import importlib.util
-from io import StringIO
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import ExitStack, redirect_stderr
+from io import StringIO
+from pathlib import Path
 from unittest import mock
-
 
 RUNNERCTL_PATH = Path(__file__).resolve().parents[1] / "runnerctl.py"
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -63,21 +62,25 @@ class RunnerControlTests(unittest.TestCase):
     def test_operation_lock_serializes_instances(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "runner.lock"
-            with self.runnerctl.operation_lock(path):
-                with self.assertRaisesRegex(self.runnerctl.RunnerError, "another Runner"):
-                    with self.runnerctl.operation_lock(path):
-                        self.fail("acquired twice")
+            with (
+                self.runnerctl.operation_lock(path),
+                self.assertRaisesRegex(self.runnerctl.RunnerError, "another Runner"),
+                self.runnerctl.operation_lock(path),
+            ):
+                self.fail("acquired twice")
             with self.runnerctl.operation_lock(path):
                 pass
 
     def test_timeout_does_not_echo_arguments_or_output(self) -> None:
-        with mock.patch.object(
-            self.runnerctl.subprocess,
-            "run",
-            side_effect=subprocess.TimeoutExpired(["fake", "private"], 1, output="private"),
+        with (
+            mock.patch.object(
+                self.runnerctl.subprocess,
+                "run",
+                side_effect=subprocess.TimeoutExpired(["fake", "private"], 1, output="private"),
+            ),
+            self.assertRaises(self.runnerctl.RunnerError) as raised,
         ):
-            with self.assertRaises(self.runnerctl.RunnerError) as raised:
-                self.runnerctl.run(["fake", "private"], timeout=1)
+            self.runnerctl.run(["fake", "private"], timeout=1)
         self.assertNotIn("private", str(raised.exception))
 
     def test_reconcile_twice_change_and_failed_restart_retry(self) -> None:
@@ -193,9 +196,11 @@ class RunnerControlTests(unittest.TestCase):
             ].replace('memory = "4g"', 'memory = "8g"')
             fail_restart = True
             failure_output = StringIO()
-            with redirect_stderr(failure_output):
-                with self.assertRaisesRegex(self.runnerctl.RunnerError, "restart failed"):
-                    self.runnerctl.reconcile(instance, platform, paths=paths)
+            with (
+                redirect_stderr(failure_output),
+                self.assertRaisesRegex(self.runnerctl.RunnerError, "restart failed"),
+            ):
+                self.runnerctl.reconcile(instance, platform, paths=paths)
             self.assertIn("[failed] Converging Runner service", failure_output.getvalue())
             self.assertNotIn("[done] Converging Runner service", failure_output.getvalue())
             self.assertTrue((root / "gitlab-runner/config/.reconcile.pending").exists())
@@ -238,13 +243,15 @@ class RunnerControlTests(unittest.TestCase):
         instance = self.instances["frontend"]
         platform = self.platform
         with redirect_stderr(output):
-            with mock.patch.object(
-                self.runnerctl,
-                "check_prerequisites",
-                side_effect=self.runnerctl.RunnerError("synthetic secret"),
+            with (
+                mock.patch.object(
+                    self.runnerctl,
+                    "check_prerequisites",
+                    side_effect=self.runnerctl.RunnerError("synthetic secret"),
+                ),
+                self.assertRaises(self.runnerctl.RunnerError),
             ):
-                with self.assertRaises(self.runnerctl.RunnerError):
-                    self.runnerctl.check("frontend", instance, platform)
+                self.runnerctl.check("frontend", instance, platform)
             with mock.patch.object(self.runnerctl, "_reconcile_impl", return_value=False):
                 self.runnerctl.reconcile(instance, platform)
             with mock.patch.object(self.runnerctl, "_register_impl"):
@@ -380,9 +387,9 @@ class RunnerControlTests(unittest.TestCase):
                 side_effect=self.runnerctl.RunnerError("not ready"),
             ),
             mock.patch.object(self.runnerctl, "ensure_account") as ensure_account,
+            self.assertRaisesRegex(self.runnerctl.RunnerError, "not ready"),
         ):
-            with self.assertRaisesRegex(self.runnerctl.RunnerError, "not ready"):
-                self.runnerctl.reconcile(instance, self.platform)
+            self.runnerctl.reconcile(instance, self.platform)
 
         ensure_account.assert_not_called()
 
@@ -420,9 +427,9 @@ class RunnerControlTests(unittest.TestCase):
             mock.patch.object(self.runnerctl.pwd, "getpwnam", return_value=entry),
             mock.patch.object(self.runnerctl.grp, "getgrgid", return_value=primary_group),
             mock.patch.object(self.runnerctl.os, "getgrouplist", return_value=[1001, 998]),
+            self.assertRaisesRegex(self.runnerctl.RunnerError, "supplementary"),
         ):
-            with self.assertRaisesRegex(self.runnerctl.RunnerError, "supplementary"):
-                self.runnerctl.ensure_account(instance, self.platform)
+            self.runnerctl.ensure_account(instance, self.platform)
 
     def test_run_as_clears_the_parent_environment(self) -> None:
         instance = self.instances["frontend"]
@@ -512,19 +519,21 @@ class RunnerControlTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             path = root / "managed"
-            with mock.patch.object(
-                self.runnerctl.os,
-                "replace",
-                side_effect=OSError("simulated replacement failure"),
+            with (
+                mock.patch.object(
+                    self.runnerctl.os,
+                    "replace",
+                    side_effect=OSError("simulated replacement failure"),
+                ),
+                self.assertRaises(OSError),
             ):
-                with self.assertRaises(OSError):
-                    self.runnerctl.atomic_write(
-                        path,
-                        "sensitive test value\n",
-                        mode=0o600,
-                        uid=os.getuid(),
-                        gid=os.getgid(),
-                    )
+                self.runnerctl.atomic_write(
+                    path,
+                    "sensitive test value\n",
+                    mode=0o600,
+                    uid=os.getuid(),
+                    gid=os.getgid(),
+                )
 
             self.assertEqual(list(root.iterdir()), [])
 
@@ -665,21 +674,23 @@ class RunnerControlTests(unittest.TestCase):
             )
         )
         completed = subprocess.CompletedProcess([], 0, "", "")
-        with mock.patch.object(
-            self.runnerctl,
-            "run_as",
-            side_effect=[
-                completed,
-                self.runnerctl.RunnerError("job failed"),
-                completed,
-            ],
-        ) as invoked:
-            with self.assertRaisesRegex(self.runnerctl.RunnerError, "job failed"):
-                self.runnerctl.validate_job_network(
-                    instance,
-                    self.platform,
-                    entry,
-                )
+        with (
+            mock.patch.object(
+                self.runnerctl,
+                "run_as",
+                side_effect=[
+                    completed,
+                    self.runnerctl.RunnerError("job failed"),
+                    completed,
+                ],
+            ) as invoked,
+            self.assertRaisesRegex(self.runnerctl.RunnerError, "job failed"),
+        ):
+            self.runnerctl.validate_job_network(
+                instance,
+                self.platform,
+                entry,
+            )
 
         cleanup_arguments = invoked.call_args_list[-1].args[1]
         self.assertEqual(
