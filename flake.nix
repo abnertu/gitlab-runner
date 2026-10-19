@@ -3,7 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    nix-adapter.url = "github:gin31259461/nix-adapter";
+    nix-adapter.url = "github:abnertu/nix-adapter";
     nix-adapter.inputs.nixpkgs.follows = "nixpkgs";
   };
 
