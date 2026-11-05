@@ -2,7 +2,7 @@
   description = "Dedicated rootless Podman GitLab Runner manager CLI";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     nix-adapter.url = "github:abnertu/nix-adapter";
     nix-adapter.inputs.nixpkgs.follows = "nixpkgs";
   };
