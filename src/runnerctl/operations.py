@@ -170,7 +170,34 @@ def ensure_account(instance: dict[str, Any], platform: dict[str, str]) -> pwd.st
     return entry
 
 
+REGISTRATION_TIMESTAMPS = ("token_obtained_at", "token_expires_at")
+PODMAN_IMAGE_MISSING = 1
+"""`podman image exists` status for an image that is not present."""
+
+
 def registration_metadata(config_path: Path) -> dict[str, str]:
+    """The token, ID and token timestamps of the one registration in a config.
+
+    Return an empty mapping when the config holds no registration. Raise
+    `RunnerError` if it is not TOML or holds more than one or a malformed
+    registration; messages never contain the token.
+    """
+    registration = _single_registration(config_path)
+    if registration is None:
+        return {}
+    token = registration.get("token")
+    if not isinstance(token, str) or not token:
+        raise RunnerError("dedicated Runner config contains an incomplete registration")
+    metadata = {"token": token}
+    if "id" in registration:
+        metadata["id"] = _registration_id(registration["id"])
+    for key in REGISTRATION_TIMESTAMPS:
+        if key in registration:
+            metadata[key] = _registration_timestamp(registration[key])
+    return metadata
+
+
+def _single_registration(config_path: Path) -> dict[str, Any] | None:
     try:
         document = tomllib.loads(read_managed(config_path))
     except (ValueError, UnicodeError):
@@ -178,29 +205,26 @@ def registration_metadata(config_path: Path) -> dict[str, str]:
     registrations: object = document.get("runners", [])
     if not isinstance(registrations, list):
         raise RunnerError("dedicated Runner registrations must be a list")
-    if len(cast("list[object]", registrations)) > 1:
+    entries = cast("list[object]", registrations)
+    if len(entries) > 1:
         raise RunnerError("dedicated Runner config contains multiple registrations")
-    if not registrations:
-        return {}
-    first = cast("list[object]", registrations)[0]
-    if not isinstance(first, dict):
+    if not entries:
+        return None
+    if not isinstance(entries[0], dict):
         raise RunnerError("dedicated Runner config contains an incomplete registration")
-    runner = cast("dict[str, Any]", first)
-    token = runner.get("token")
-    if not isinstance(token, str) or not token:
-        raise RunnerError("dedicated Runner config contains an incomplete registration")
-    metadata = {"token": token}
-    if "id" in runner:
-        if type(runner["id"]) is not int or runner["id"] <= 0:
-            raise RunnerError("dedicated Runner registration has an invalid ID")
-        metadata["id"] = str(runner["id"])
-    for field in ("token_obtained_at", "token_expires_at"):
-        if field in runner:
-            value = runner[field]
-            if not isinstance(value, datetime) or value.tzinfo is None:
-                raise RunnerError("dedicated Runner registration has an invalid timestamp")
-            metadata[field] = value.isoformat().replace("+00:00", "Z")
-    return metadata
+    return cast("dict[str, Any]", entries[0])
+
+
+def _registration_id(value: object) -> str:
+    if type(value) is not int or value <= 0:
+        raise RunnerError("dedicated Runner registration has an invalid ID")
+    return str(value)
+
+
+def _registration_timestamp(value: object) -> str:
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise RunnerError("dedicated Runner registration has an invalid timestamp")
+    return value.isoformat().replace("+00:00", "Z")
 
 
 def run_as(
@@ -427,127 +451,182 @@ def _reconcile_impl(
     paths: HostPaths = DEFAULT_PATHS,
     progress: Progress,
 ) -> bool:
+    """Converge one instance; return whether anything changed.
+
+    A pending marker is written before the first change and removed only
+    after the service runs as declared, so an interrupted run restarts the
+    service on the next one.
+    """
     require_root()
     with progress.task("Checking prerequisites"):
         check_prerequisites(instance, platform)
-
     with progress.task("Preparing account, sub-IDs and runtime"), progress.external_output():
-        entry = ensure_account(instance, platform)
-        account = instance["account"]
-        ensure_subordinate_range(paths.subuid, entry.pw_name, account["subUid"])
-        ensure_subordinate_range(paths.subgid, entry.pw_name, account["subGid"])
-        run([platform["loginctl"], "enable-linger", entry.pw_name])
-        run([platform["systemctl"], "start", f"user@{entry.pw_uid}.service"])
-        wait_for_path(paths.runtime / str(entry.pw_uid) / "bus")
-        verify_rootless_podman(entry, platform)
-        config_dir, _, unit_dir = ensure_directories(entry)
+        entry, config_dir, unit_dir = _prepare_account(instance, platform, paths)
     pending = config_dir / ".reconcile.pending"
 
-    def mark_pending():
-        atomic_write(pending, "pending\n", mode=0o600, uid=entry.pw_uid, gid=entry.pw_gid)
+    def mark_pending() -> None:
+        _write_private(entry, pending, "pending\n")
 
     with progress.task("Reconciling trust and configuration"), progress.external_output():
         ca_changed = reconcile_ca(instance, entry, config_dir, platform, mark_pending)
-        config_path = config_dir / "config.toml"
-        metadata = registration_metadata(config_path)
-        template_changed = atomic_write(
-            config_dir / "registration-template.toml",
-            render_registration_template(instance),
-            mode=0o600,
-            uid=entry.pw_uid,
-            gid=entry.pw_gid,
-            before_change=mark_pending,
+        files_changed, unit_changed = _write_configuration(
+            instance, platform, entry, config_dir, unit_dir, mark_pending
         )
-        config_changed = atomic_write(
-            config_path,
-            render_config(instance, metadata),
-            mode=0o600,
-            uid=entry.pw_uid,
-            gid=entry.pw_gid,
-            before_change=mark_pending,
-        )
-        service_name = instance["runner"]["serviceName"]
-        unit_changed = atomic_write(
-            unit_dir / f"{service_name}.service",
-            render_service(instance, platform),
-            mode=0o600,
-            uid=entry.pw_uid,
-            gid=entry.pw_gid,
-            before_change=mark_pending,
-        )
-
     retry_pending = pending.exists()
     with progress.task("Preparing user services"), progress.external_output():
         if unit_changed or retry_pending:
-            run_as(
-                entry,
-                [platform["systemctl"], "--user", "daemon-reload"],
-                platform=platform,
-            )
-        run_as(
-            entry,
-            [platform["systemctl"], "--user", "enable", "--now", "podman.socket"],
-            platform=platform,
-        )
+            _user_systemctl(entry, platform, "daemon-reload")
+        _user_systemctl(entry, platform, "enable", "--now", "podman.socket")
     with progress.task("Preparing manager image"):
-        image = instance["runner"]["managerImage"]
-        image_exists = run_as(
-            entry,
-            [platform["podman"], "image", "exists", image],
-            platform=platform,
-            capture=True,
-            check=False,
-        )
-        image_pulled = image_exists.returncode == 1
-        if image_pulled:
-            mark_pending()
-            with progress.external_output():
-                run_as(entry, [platform["podman"], "pull", image], platform=platform)
-        elif image_exists.returncode != 0:
-            raise RunnerError("unable to inspect the Runner manager image")
-    service_unit = f"{service_name}.service"
+        image_pulled = _ensure_manager_image(instance, platform, entry, mark_pending, progress)
     with progress.task("Converging Runner service"), progress.external_output():
-        run_as(
-            entry,
-            [platform["systemctl"], "--user", "enable", service_unit],
-            platform=platform,
+        service_started, manager_drift = _converge_service(
+            instance, platform, entry, mark_pending, restart=retry_pending or image_pulled
         )
-        service_active = run_as(
-            entry,
-            [platform["systemctl"], "--user", "is-active", service_unit],
-            platform=platform,
-            capture=True,
-            check=False,
-        )
-        manager_drift = (
-            service_active.returncode == 0
-            and inspect_manager(instance, platform, entry) != "matches-declaration"
-        )
-        if manager_drift:
-            mark_pending()
-        if service_active.returncode != 0:
-            run_as(
-                entry,
-                [platform["systemctl"], "--user", "start", service_unit],
-                platform=platform,
-            )
-        elif retry_pending or image_pulled or manager_drift:
-            run_as(
-                entry,
-                [platform["systemctl"], "--user", "restart", service_unit],
-                platform=platform,
-            )
     remove_managed_file(pending)
     return (
         retry_pending
-        or template_changed
-        or config_changed
+        or files_changed
         or unit_changed
         or ca_changed
         or image_pulled
         or manager_drift
-        or service_active.returncode != 0
+        or service_started
     )
+
+
+def _prepare_account(
+    instance: dict[str, Any], platform: dict[str, str], paths: HostPaths
+) -> tuple[pwd.struct_passwd, Path, Path]:
+    """Ensure the account, its sub-IDs, its user manager and rootless Podman."""
+    entry = ensure_account(instance, platform)
+    account = instance["account"]
+    ensure_subordinate_range(paths.subuid, entry.pw_name, account["subUid"])
+    ensure_subordinate_range(paths.subgid, entry.pw_name, account["subGid"])
+    run([platform["loginctl"], "enable-linger", entry.pw_name])
+    run([platform["systemctl"], "start", f"user@{entry.pw_uid}.service"])
+    wait_for_path(paths.runtime / str(entry.pw_uid) / "bus")
+    verify_rootless_podman(entry, platform)
+    config_dir, _, unit_dir = ensure_directories(entry)
+    return entry, config_dir, unit_dir
+
+
+def _write_private(
+    entry: pwd.struct_passwd,
+    path: Path,
+    text: str,
+    before_change: Callable[[], None] | None = None,
+) -> bool:
+    """Write `path` owned by the Runner account with mode 0600."""
+    return atomic_write(
+        path,
+        text,
+        mode=0o600,
+        uid=entry.pw_uid,
+        gid=entry.pw_gid,
+        before_change=before_change,
+    )
+
+
+def _write_configuration(
+    instance: dict[str, Any],
+    platform: dict[str, str],
+    entry: pwd.struct_passwd,
+    config_dir: Path,
+    unit_dir: Path,
+    mark_pending: Callable[[], None],
+) -> tuple[bool, bool]:
+    """Write the registration template, config and unit.
+
+    Return whether the template or config changed, and whether the unit did.
+    The config keeps the existing registration's token and ID.
+    """
+    config_path = config_dir / "config.toml"
+    metadata = registration_metadata(config_path)
+    template_changed = _write_private(
+        entry,
+        config_dir / "registration-template.toml",
+        render_registration_template(instance),
+        mark_pending,
+    )
+    config_changed = _write_private(
+        entry, config_path, render_config(instance, metadata), mark_pending
+    )
+    unit_changed = _write_private(
+        entry,
+        unit_dir / f"{instance['runner']['serviceName']}.service",
+        render_service(instance, platform),
+        mark_pending,
+    )
+    return template_changed or config_changed, unit_changed
+
+
+def _user_systemctl(
+    entry: pwd.struct_passwd, platform: dict[str, str], *args: str, query: bool = False
+) -> subprocess.CompletedProcess[str]:
+    """Run `systemctl --user` as the Runner account.
+
+    A `query` captures output and returns a nonzero status instead of raising.
+    """
+    return run_as(
+        entry,
+        [platform["systemctl"], "--user", *args],
+        platform=platform,
+        capture=query,
+        check=not query,
+    )
+
+
+def _ensure_manager_image(
+    instance: dict[str, Any],
+    platform: dict[str, str],
+    entry: pwd.struct_passwd,
+    mark_pending: Callable[[], None],
+    progress: Progress,
+) -> bool:
+    """Pull the manager image if it is missing; return whether it was pulled."""
+    image = instance["runner"]["managerImage"]
+    exists = run_as(
+        entry,
+        [platform["podman"], "image", "exists", image],
+        platform=platform,
+        capture=True,
+        check=False,
+    )
+    if exists.returncode == 0:
+        return False
+    if exists.returncode != PODMAN_IMAGE_MISSING:
+        raise RunnerError("unable to inspect the Runner manager image")
+    mark_pending()
+    with progress.external_output():
+        run_as(entry, [platform["podman"], "pull", image], platform=platform)
+    return True
+
+
+def _converge_service(
+    instance: dict[str, Any],
+    platform: dict[str, str],
+    entry: pwd.struct_passwd,
+    mark_pending: Callable[[], None],
+    *,
+    restart: bool,
+) -> tuple[bool, bool]:
+    """Enable the service and start or restart it as needed.
+
+    Return whether it had to be started, and whether the running manager
+    drifted from the declaration (which forces a restart).
+    """
+    unit = f"{instance['runner']['serviceName']}.service"
+    _user_systemctl(entry, platform, "enable", unit)
+    active = _user_systemctl(entry, platform, "is-active", unit, query=True).returncode == 0
+    drift = active and inspect_manager(instance, platform, entry) != "matches-declaration"
+    if drift:
+        mark_pending()
+    if not active:
+        _user_systemctl(entry, platform, "start", unit)
+    elif restart or drift:
+        _user_systemctl(entry, platform, "restart", unit)
+    return not active, drift
 
 
 def reconcile(
