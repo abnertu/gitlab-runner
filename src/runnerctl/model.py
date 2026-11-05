@@ -6,6 +6,7 @@ import fnmatch
 import ipaddress
 import json
 import re
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, cast
@@ -42,108 +43,166 @@ def gitlab_hostname(instance: dict[str, Any]) -> str:
     return hostname
 
 
+INSTANCE_NAME = re.compile(r"[a-z][a-z0-9-]*")
+ACCOUNT_NAME = re.compile(r"[a-z_][a-z0-9_-]*")
+SERVICE_NAME = re.compile(r"[A-Za-z0-9_.@-]+")
+INTERFACE_NAME = re.compile(r"[A-Za-z0-9_.:-]+")
+MAX_ACCOUNT_NAME = 32
+MIN_SUBORDINATE_IDS = 65536
+MAX_SUBORDINATE_ID = 4_294_967_294
+SUBORDINATE_RANGES = ("subUid", "subGid")
+CA_SUFFIXES = {".crt", ".pem"}
+
+
+@dataclass
+class _Claims:
+    """Account names, service names and UIDs already taken by earlier instances."""
+
+    users: set[str] = field(default_factory=set[str])
+    services: set[str] = field(default_factory=set[str])
+    uids: set[int] = field(default_factory=set[int])
+
+
 def validate_instances(instances: dict[str, Any]) -> None:
-    users: set[str] = set()
-    service_names: set[str] = set()
-    uids: set[int] = set()
-    for instance_name, instance in instances.items():
-        account = instance["account"]
-        gitlab = instance["gitlab"]
-        runner = instance["runner"]
-        network = instance["network"]
+    """Check every instance declaration and their combination.
 
-        if not re.fullmatch(r"[a-z][a-z0-9-]*", instance_name):
-            raise RunnerError(f"invalid instance name: {instance_name}")
-        if not re.fullmatch(r"[a-z_][a-z0-9_-]*", account["user"]):
-            raise RunnerError(f"invalid account name for {instance_name}")
-        if account["user"] == "root" or len(account["user"]) > 32:
-            raise RunnerError(f"unsafe account name for {instance_name}")
-        if not re.fullmatch(r"[A-Za-z0-9_.@-]+", runner["serviceName"]):
-            raise RunnerError(f"invalid service name for {instance_name}")
-        if account["user"] in users or runner["serviceName"] in service_names:
-            raise RunnerError("Runner account and service names must be unique")
-        if account["uid"] in uids:
-            raise RunnerError("Runner account UIDs must be unique")
-        users.add(account["user"])
-        service_names.add(runner["serviceName"])
-        uids.add(account["uid"])
+    Raise `RunnerError` on the first invalid field, on a name, service or UID
+    that two instances share, or on overlapping subordinate ID ranges.
+    """
+    claims = _Claims()
+    for name, instance in instances.items():
+        _check_identity(name, instance, claims)
+        _check_account(name, instance)
+        _check_gitlab_urls(name, instance["gitlab"])
+        _check_subordinate_ranges(name, instance["account"])
+        _check_images(name, instance)
+        _check_resources(name, instance["runner"])
+        _check_network(name, instance["network"])
+        _check_ca_certificate(name, instance["gitlab"])
+    _check_disjoint_ranges(instances)
 
-        if not runner["name"]:
-            raise RunnerError(f"{instance_name} runner name must not be empty")
-        if account["uid"] <= 0:
-            raise RunnerError(f"{instance_name} uid must be a positive integer")
-        if account["home"] != f"/home/{account['user']}":
-            raise RunnerError(f"{instance_name} must use its dedicated /home directory")
-        gitlab_url = urlparse(str(gitlab["url"]))
-        health_url = urlparse(str(gitlab["healthUrl"]))
-        if (
-            gitlab_url.scheme != "https"
-            or not gitlab_url.hostname
-            or health_url.scheme != "https"
-            or health_url.hostname != gitlab_url.hostname
-        ):
-            raise RunnerError(f"{instance_name} GitLab URLs must use the same HTTPS hostname")
-        for range_name in ("subUid", "subGid"):
-            id_range = account[range_name]
-            if id_range["start"] <= 0 or id_range["count"] < 65536:
-                raise RunnerError(f"{instance_name} {range_name} must contain at least 65536 IDs")
-            if id_range["start"] + id_range["count"] - 1 > 4_294_967_294:
-                raise RunnerError(f"{instance_name} has an invalid {range_name} range")
-        if account["subUid"] != account["subGid"]:
-            raise RunnerError(f"{instance_name} subordinate UID and GID ranges must match")
-        for image_name in ("managerImage", "defaultJobImage"):
-            image = runner[image_name]
-            if not FIXED_IMAGE_PATTERN.fullmatch(image) or image.endswith(":latest"):
-                raise RunnerError(f"{instance_name} {image_name} must be qualified and pinned")
-        if not runner["allowedImages"] or not any(
-            fnmatch.fnmatchcase(runner["defaultJobImage"], pattern)
-            for pattern in runner["allowedImages"]
-        ):
-            raise RunnerError(f"{instance_name} defaultJobImage must match allowedImages")
-        validation_image = instance["validation"]["image"]
-        if not FIXED_IMAGE_PATTERN.fullmatch(validation_image) or validation_image.endswith(
-            ":latest"
-        ):
-            raise RunnerError(f"{instance_name} validation image must be qualified and pinned")
-        for pattern in [*runner["allowedImages"], *runner["allowedServices"]]:
-            if not IMAGE_PATTERN.fullmatch(pattern) or pattern.endswith(":latest"):
-                raise RunnerError(f"{instance_name} has an invalid image allowlist pattern")
-        if runner["concurrent"] != 1:
-            raise RunnerError(f"{instance_name} must remain a dedicated concurrent=1 stack")
+
+def _check_identity(name: str, instance: dict[str, Any], claims: _Claims) -> None:
+    user = instance["account"]["user"]
+    service = instance["runner"]["serviceName"]
+    uid = instance["account"]["uid"]
+    if not INSTANCE_NAME.fullmatch(name):
+        raise RunnerError(f"invalid instance name: {name}")
+    if not ACCOUNT_NAME.fullmatch(user):
+        raise RunnerError(f"invalid account name for {name}")
+    if user == "root" or len(user) > MAX_ACCOUNT_NAME:
+        raise RunnerError(f"unsafe account name for {name}")
+    if not SERVICE_NAME.fullmatch(service):
+        raise RunnerError(f"invalid service name for {name}")
+    if user in claims.users or service in claims.services:
+        raise RunnerError("Runner account and service names must be unique")
+    if uid in claims.uids:
+        raise RunnerError("Runner account UIDs must be unique")
+    claims.users.add(user)
+    claims.services.add(service)
+    claims.uids.add(uid)
+
+
+def _check_account(name: str, instance: dict[str, Any]) -> None:
+    account = instance["account"]
+    if not instance["runner"]["name"]:
+        raise RunnerError(f"{name} runner name must not be empty")
+    if account["uid"] <= 0:
+        raise RunnerError(f"{name} uid must be a positive integer")
+    if account["home"] != f"/home/{account['user']}":
+        raise RunnerError(f"{name} must use its dedicated /home directory")
+
+
+def _check_gitlab_urls(name: str, gitlab: dict[str, Any]) -> None:
+    coordinator = urlparse(str(gitlab["url"]))
+    health = urlparse(str(gitlab["healthUrl"]))
+    if (
+        coordinator.scheme != "https"
+        or not coordinator.hostname
+        or health.scheme != "https"
+        or health.hostname != coordinator.hostname
+    ):
+        raise RunnerError(f"{name} GitLab URLs must use the same HTTPS hostname")
+
+
+def _check_subordinate_ranges(name: str, account: dict[str, Any]) -> None:
+    for range_name in SUBORDINATE_RANGES:
+        id_range = account[range_name]
+        if id_range["start"] <= 0 or id_range["count"] < MIN_SUBORDINATE_IDS:
+            raise RunnerError(
+                f"{name} {range_name} must contain at least {MIN_SUBORDINATE_IDS} IDs"
+            )
+        if id_range["start"] + id_range["count"] - 1 > MAX_SUBORDINATE_ID:
+            raise RunnerError(f"{name} has an invalid {range_name} range")
+    if account["subUid"] != account["subGid"]:
+        raise RunnerError(f"{name} subordinate UID and GID ranges must match")
+
+
+def _pinned(image: str) -> bool:
+    return bool(FIXED_IMAGE_PATTERN.fullmatch(image)) and not image.endswith(":latest")
+
+
+def _check_images(name: str, instance: dict[str, Any]) -> None:
+    runner = instance["runner"]
+    for image_name in ("managerImage", "defaultJobImage"):
+        if not _pinned(runner[image_name]):
+            raise RunnerError(f"{name} {image_name} must be qualified and pinned")
+    allowed = runner["allowedImages"]
+    if not allowed or not any(
+        fnmatch.fnmatchcase(runner["defaultJobImage"], pattern) for pattern in allowed
+    ):
+        raise RunnerError(f"{name} defaultJobImage must match allowedImages")
+    if not _pinned(instance["validation"]["image"]):
+        raise RunnerError(f"{name} validation image must be qualified and pinned")
+    for pattern in [*allowed, *runner["allowedServices"]]:
+        if not IMAGE_PATTERN.fullmatch(pattern) or pattern.endswith(":latest"):
+            raise RunnerError(f"{name} has an invalid image allowlist pattern")
+
+
+def _check_resources(name: str, runner: dict[str, Any]) -> None:
+    if runner["concurrent"] != 1:
+        raise RunnerError(f"{name} must remain a dedicated concurrent=1 stack")
+    try:
+        cpus = Decimal(runner["cpus"])
+    except InvalidOperation as error:
+        raise RunnerError(f"{name} cpus must be positive") from error
+    if not cpus.is_finite() or cpus <= 0:
+        raise RunnerError(f"{name} cpus must be positive")
+    if not MEMORY_PATTERN.fullmatch(runner["memory"]):
+        raise RunnerError(f"{name} memory must be a positive size")
+    if runner["shmSizeBytes"] <= 0:
+        raise RunnerError(f"{name} shmSizeBytes must be positive")
+
+
+def _check_network(name: str, network: dict[str, Any]) -> None:
+    interface = network.get("requiredInterface")
+    if interface is not None and not INTERFACE_NAME.fullmatch(interface):
+        raise RunnerError(f"{name} has an invalid requiredInterface")
+    dns = network.get("dns")
+    if dns is not None:
         try:
-            cpus = Decimal(runner["cpus"])
-        except InvalidOperation as error:
-            raise RunnerError(f"{instance_name} cpus must be positive") from error
-        if not cpus.is_finite() or cpus <= 0:
-            raise RunnerError(f"{instance_name} cpus must be positive")
-        if not MEMORY_PATTERN.fullmatch(runner["memory"]):
-            raise RunnerError(f"{instance_name} memory must be a positive size")
-        if runner["shmSizeBytes"] <= 0:
-            raise RunnerError(f"{instance_name} shmSizeBytes must be positive")
-        required_interface = network.get("requiredInterface")
-        if required_interface is not None and not re.fullmatch(
-            r"[A-Za-z0-9_.:-]+", required_interface
-        ):
-            raise RunnerError(f"{instance_name} has an invalid requiredInterface")
-        dns = network.get("dns")
-        if dns is not None:
-            try:
-                ipaddress.ip_address(dns)
-            except ValueError as error:
-                raise RunnerError(f"{instance_name} dns must be an IP address") from error
-        ca_certificate = gitlab.get("caCertificate")
-        if ca_certificate is not None:
-            if Path(ca_certificate).suffix.lower() not in {".crt", ".pem"}:
-                raise RunnerError(f"{instance_name} CA certificate must use .crt or .pem")
-            if not Path(ca_certificate).is_file():
-                raise RunnerError(f"{instance_name} CA certificate is missing: {ca_certificate}")
+            ipaddress.ip_address(dns)
+        except ValueError as error:
+            raise RunnerError(f"{name} dns must be an IP address") from error
 
+
+def _check_ca_certificate(name: str, gitlab: dict[str, Any]) -> None:
+    certificate = gitlab.get("caCertificate")
+    if certificate is None:
+        return
+    if Path(certificate).suffix.lower() not in CA_SUFFIXES:
+        raise RunnerError(f"{name} CA certificate must use .crt or .pem")
+    if not Path(certificate).is_file():
+        raise RunnerError(f"{name} CA certificate is missing: {certificate}")
+
+
+def _check_disjoint_ranges(instances: dict[str, Any]) -> None:
     names = sorted(instances)
     for index, left_name in enumerate(names):
         for right_name in names[index + 1 :]:
             left = instances[left_name]["account"]
             right = instances[right_name]["account"]
-            for range_name in ("subUid", "subGid"):
+            for range_name in SUBORDINATE_RANGES:
                 if ranges_overlap(left[range_name], right[range_name]):
                     raise RunnerError(
                         f"{left_name} and {right_name} have overlapping {range_name} ranges"
@@ -214,9 +273,9 @@ def render_config(instance: dict[str, Any], metadata: dict[str, str]) -> str:
     if "id" in metadata:
         fields.append(f"  id = {metadata['id']}")
     fields.append(f"  token = {toml_string(metadata['token'])}")
-    for field in ("token_obtained_at", "token_expires_at"):
-        if field in metadata:
-            fields.append(f"  {field} = {metadata[field]}")
+    for key in ("token_obtained_at", "token_expires_at"):
+        if key in metadata:
+            fields.append(f"  {key} = {metadata[key]}")
     registration = registration.replace("@REGISTRATION_METADATA@", "\n".join(fields), 1)
     return (
         config
