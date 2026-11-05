@@ -19,6 +19,8 @@
         "aarch64-linux"
       ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
+      # pyproject.toml holds the only version literal.
+      inherit (builtins.fromTOML (builtins.readFile ./pyproject.toml)) project;
     in
     {
       packages = forAllSystems (
@@ -28,7 +30,7 @@
           adapter = nix-adapter.packages.${system}.default;
           runnerctl = pkgs.python3Packages.buildPythonApplication {
             pname = "gitlab-runnerctl";
-            version = "0.1.0";
+            inherit (project) version;
             src = ./.;
             format = "pyproject";
             nativeBuildInputs = [ pkgs.python3Packages.setuptools ];

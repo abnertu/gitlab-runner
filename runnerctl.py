@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import grp
+import importlib.metadata
 import json
 import os
 import pwd
@@ -45,6 +46,8 @@ from runner_model import (
     render_service,
     validate_instances,
 )
+
+PACKAGE = "gitlab-runnerctl"
 
 
 @dataclass(frozen=True)
@@ -898,8 +901,24 @@ def status(
         _status_impl(instance_name, instance, platform, progress=current)
 
 
+class VersionAction(argparse.Action):
+    """Print the installed package version and exit.
+
+    The version is looked up only when the option is given, so a source
+    checkout without package metadata still parses every other option.
+    """
+
+    def __init__(self, option_strings: list[str], dest: str, **_: object) -> None:
+        super().__init__(option_strings, dest, nargs=0, help="show the version and exit")
+
+    def __call__(self, parser: argparse.ArgumentParser, *_: object) -> None:
+        print(f"runnerctl {importlib.metadata.version(PACKAGE)}")
+        parser.exit()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--version", action=VersionAction)
     parser.add_argument(
         "-c",
         "--config",
