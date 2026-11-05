@@ -23,9 +23,21 @@ line-length = 100
 target-version = "py313"
 
 [tool.ruff.lint]
-select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF"]
+select = [
+    "E", "W", "F", "I", "B", "UP", "SIM", "RUF",
+    "C901", "PLR0911", "PLR0912", "PLR0915",
+]
 # The formatter owns line length.
 ignore = ["E501"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.per-file-ignores]
+# Temporary: these functions are split in the readability refactor.
+"runner_model.py" = ["C901", "PLR0912", "PLR0915"]
+"runnerctl.py" = ["C901", "PLR0915"]
+"tests/test_runnerctl.py" = ["PLR0915"]
 
 [tool.pyright]
 include = ["runnerctl.py", "runner_config.py", "runner_model.py", "tests"]

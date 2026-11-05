@@ -1,0 +1,2 @@
+# Nested input sets read worse than repeated dotted keys.
+disabled = ["repeated_keys"]

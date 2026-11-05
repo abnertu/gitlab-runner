@@ -63,23 +63,46 @@
         {
           package = runnerctl;
 
-          source-format = pkgs.runCommand "gitlab-runnerctl-source-format" {
-            nativeBuildInputs = [ pkgs.ruff ];
-          } ''
-            ruff check --no-cache ${./.}
-            ruff format --no-cache --check ${./.}
-            touch "$out"
-          '';
+          source-lint =
+            pkgs.runCommand "gitlab-runnerctl-source-lint"
+              {
+                nativeBuildInputs = [
+                  pkgs.deadnix
+                  pkgs.nixfmt
+                  pkgs.statix
+                ];
+              }
+              ''
+                cd ${./.}
+                statix check .
+                deadnix --fail flake.nix
+                nixfmt --check flake.nix
+                touch "$out"
+              '';
 
-          python-types = pkgs.runCommand "gitlab-runnerctl-python-types" {
-            nativeBuildInputs = [
-              pkgs.pyright
-              python
-            ];
-          } ''
-            pyright --project ${./.} ${./runnerctl.py} ${./runner_config.py} ${./runner_model.py}
-            touch "$out"
-          '';
+          source-format =
+            pkgs.runCommand "gitlab-runnerctl-source-format"
+              {
+                nativeBuildInputs = [ pkgs.ruff ];
+              }
+              ''
+                ruff check --no-cache ${./.}
+                ruff format --no-cache --check ${./.}
+                touch "$out"
+              '';
+
+          python-types =
+            pkgs.runCommand "gitlab-runnerctl-python-types"
+              {
+                nativeBuildInputs = [
+                  pkgs.pyright
+                  python
+                ];
+              }
+              ''
+                pyright --project ${./.} ${./runnerctl.py} ${./runner_config.py} ${./runner_model.py}
+                touch "$out"
+              '';
         }
       );
 
