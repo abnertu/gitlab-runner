@@ -11,8 +11,7 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
 
-from nix_adapter.exceptions import Conflict
-from nix_adapter.system import ranges_overlap
+from nix_adapter import Conflict, ranges_overlap
 
 RunnerError = Conflict
 

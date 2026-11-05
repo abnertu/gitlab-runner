@@ -7,15 +7,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1792268790,
-        "narHash": "sha256-A4KKfR9UOF9/RIcBTc7m+Rh6xRx80nuP2vTxmz+5UUM=",
+        "lastModified": 1793902627,
+        "narHash": "sha256-m/Z+n+RZHvioeGGWvz3rwacpa8mddlEG+TdnLBffk1Y=",
         "owner": "abnertu",
         "repo": "nix-adapter",
-        "rev": "1912f0e600db3463da86c4ecf680f9dc447d7ebe",
+        "rev": "e863d1ae763482f6f6fbf4a7c2dc106c74d9bd8d",
         "type": "github"
       },
       "original": {
         "owner": "abnertu",
+        "ref": "v0.7.0",
         "repo": "nix-adapter",
         "type": "github"
       }

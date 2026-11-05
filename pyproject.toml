@@ -9,7 +9,7 @@ description = "Manage dedicated rootless GitLab Runner instances"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "nix-adapter",
+    "nix-adapter>=0.7.0",
 ]
 
 [project.scripts]

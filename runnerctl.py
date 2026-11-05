@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from nix_adapter import (
+    Progress,
     atomic_write,
     ensure_directory,
     ensure_subordinate_range,
@@ -33,7 +34,6 @@ from nix_adapter import (
 from nix_adapter import (
     operation_lock as _operation_lock,
 )
-from nix_adapter.progress import Progress
 
 from runner_config import detect_platform, load_instances, platform_paths
 from runner_model import (
