@@ -35,13 +35,12 @@
             format = "pyproject";
             nativeBuildInputs = [ pkgs.python3Packages.setuptools ];
             propagatedBuildInputs = [ adapter ];
+            # Tests import the package from the source tree.
             checkPhase = ''
-              python -m unittest discover -s tests
+              PYTHONPATH="src:$PYTHONPATH" python -m unittest discover -s tests
             '';
             pythonImportsCheck = [
-              "runnerctl"
-              "runner_config"
-              "runner_model"
+              "runnerctl.cli"
             ];
           };
         in
@@ -102,7 +101,7 @@
                 ];
               }
               ''
-                pyright --project ${./.} ${./runnerctl.py} ${./runner_config.py} ${./runner_model.py}
+                pyright --project ${./.} ${./.}/src
                 touch "$out"
               '';
         }

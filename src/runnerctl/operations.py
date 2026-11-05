@@ -1,20 +1,16 @@
-#!/usr/bin/env python3
-
-"""Converge dedicated rootless Podman GitLab Runner instances."""
+"""Runner operations: account, CA, service and registration convergence,
+plus the read-only check, verify and status inspections."""
 
 from __future__ import annotations
 
-import argparse
 import contextlib
 import grp
-import importlib.metadata
 import json
 import os
 import pwd
 import re
 import stat
 import subprocess
-import sys
 import time
 import tomllib
 from collections.abc import Callable
@@ -36,18 +32,14 @@ from nix_adapter import (
     operation_lock as _operation_lock,
 )
 
-from runner_config import detect_platform, load_instances, platform_paths
-from runner_model import (
+from .model import (
     RunnerError,
     gitlab_hostname,
     manager_matches,
     render_config,
     render_registration_template,
     render_service,
-    validate_instances,
 )
-
-PACKAGE = "gitlab-runnerctl"
 
 
 @dataclass(frozen=True)
@@ -899,89 +891,3 @@ def status(
 ) -> None:
     with progress_task("runnerctl status", "Inspecting Runner status", progress) as current:
         _status_impl(instance_name, instance, platform, progress=current)
-
-
-class VersionAction(argparse.Action):
-    """Print the installed package version and exit.
-
-    The version is looked up only when the option is given, so a source
-    checkout without package metadata still parses every other option.
-    """
-
-    def __init__(self, option_strings: list[str], dest: str, **_: object) -> None:
-        super().__init__(option_strings, dest, nargs=0, help="show the version and exit")
-
-    def __call__(self, parser: argparse.ArgumentParser, *_: object) -> None:
-        print(f"runnerctl {importlib.metadata.version(PACKAGE)}")
-        parser.exit()
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", action=VersionAction)
-    parser.add_argument(
-        "-c",
-        "--config",
-        type=Path,
-        action="append",
-        required=True,
-        metavar="FILE",
-        help="instance file named after its environment, e.g. frontend.toml; repeat per instance",
-    )
-    parser.add_argument(
-        "--platform",
-        help="host platform for executable paths; detected from /etc/os-release by default",
-    )
-    subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("validate")
-    for command in ("check", "reconcile", "register", "verify", "status"):
-        command_parser = subparsers.add_parser(command)
-        command_parser.add_argument("instance")
-    return parser.parse_args()
-
-
-def main() -> int:
-    args = parse_args()
-    # Every file loads, even for one instance: IDs and names must not collide.
-    instances = load_instances(args.config)
-    validate_instances(instances)
-    if args.command == "validate":
-        print("GitLab Runner configuration is valid")
-        return 0
-
-    instance = select_instance(instances, args.instance)
-    platform = platform_paths(args.platform or detect_platform())
-    if args.command == "check":
-        check(args.instance, instance, platform)
-    elif args.command == "status":
-        status(args.instance, instance, platform)
-    else:
-        require_root()
-        with operation_lock():
-            if args.command == "reconcile":
-                changed = reconcile(instance, platform)
-                print(f"{args.instance}: {'changed' if changed else 'unchanged'}")
-            elif args.command == "register":
-                register(instance, platform)
-            elif args.command == "verify":
-                verify(instance, platform)
-                print(f"{args.instance}: verified")
-    return 0
-
-
-def main_cli() -> None:
-    try:
-        sys.exit(main())
-    except subprocess.TimeoutExpired:
-        print(
-            "runnerctl: operation timed out; rerun the selected operation",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    except (RunnerError, KeyError, ValueError, OSError) as error:
-        print(f"runnerctl: {error}", file=sys.stderr)
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main_cli()

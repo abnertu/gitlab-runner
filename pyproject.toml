@@ -13,10 +13,10 @@ dependencies = [
 ]
 
 [project.scripts]
-runnerctl = "runnerctl:main_cli"
+runnerctl = "runnerctl.cli:main_cli"
 
-[tool.setuptools]
-py-modules = ["runnerctl", "runner_config", "runner_model"]
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.ruff]
 line-length = 100
@@ -35,11 +35,11 @@ max-complexity = 10
 
 [tool.ruff.lint.per-file-ignores]
 # Temporary: these functions are split in the readability refactor.
-"runner_model.py" = ["C901", "PLR0912", "PLR0915"]
-"runnerctl.py" = ["C901", "PLR0915"]
+"src/runnerctl/model.py" = ["C901", "PLR0912", "PLR0915"]
+"src/runnerctl/operations.py" = ["C901", "PLR0915"]
 "tests/test_runnerctl.py" = ["PLR0915"]
 
 [tool.pyright]
-include = ["runnerctl.py", "runner_config.py", "runner_model.py", "tests"]
+include = ["src", "tests"]
 pythonVersion = "3.13"
 typeCheckingMode = "strict"

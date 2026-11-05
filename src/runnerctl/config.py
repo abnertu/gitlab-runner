@@ -13,7 +13,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, cast
 
-from runner_model import RunnerError, render_artifacts
+from .model import RunnerError, render_artifacts
 
 PROVIDERS = ("gitlab",)
 MANAGER_IMAGE = "docker.io/gitlab/gitlab-runner:v18.10.1"

@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import copy
-import importlib.util
 import os
 import subprocess
 import sys
@@ -15,49 +14,28 @@ from io import StringIO
 from pathlib import Path
 from unittest import mock
 
-RUNNERCTL_PATH = Path(__file__).resolve().parents[1] / "runnerctl.py"
+from runnerctl import operations
+from runnerctl.config import PLATFORMS, load_instances
+from runnerctl.model import validate_instances
+
 FIXTURES = Path(__file__).parent / "fixtures"
 INSTANCE_FILES = [FIXTURES / "frontend.toml", FIXTURES / "dotnet.toml"]
-
-
-def load_runnerctl(path: Path | None = None):
-    try:
-        import runnerctl
-
-        return runnerctl
-    except ImportError:
-        pass
-    if path is not None and path.exists():
-        model_path = path.parent / "runner_model.py"
-        model_spec = importlib.util.spec_from_file_location("runner_model", model_path)
-        if model_spec and model_spec.loader:
-            model_module = importlib.util.module_from_spec(model_spec)
-            sys.modules["runner_model"] = model_module
-            model_spec.loader.exec_module(model_module)
-
-        spec = importlib.util.spec_from_file_location("runnerctl", path)
-        if spec is not None and spec.loader is not None:
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[spec.name] = module
-            spec.loader.exec_module(module)
-            return module
-    raise RuntimeError("unable to load runnerctl")
 
 
 class RunnerControlTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.runnerctl = load_runnerctl(RUNNERCTL_PATH)
-        from runner_config import PLATFORMS, load_instances
+        # Operations look their collaborators up in this module; patch it.
+        cls.runnerctl = operations
 
         cls.instances = load_instances(INSTANCE_FILES)
         cls.platform = PLATFORMS["arch"]
 
     def test_host_configuration_is_valid(self) -> None:
-        self.runnerctl.validate_instances(self.instances)
+        validate_instances(self.instances)
 
     def test_empty_configuration_is_valid(self) -> None:
-        self.runnerctl.validate_instances({})
+        validate_instances({})
 
     def test_operation_lock_serializes_instances(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -226,7 +204,8 @@ class RunnerControlTests(unittest.TestCase):
         result = subprocess.run(
             [
                 sys.executable,
-                str(RUNNERCTL_PATH),
+                "-m",
+                "runnerctl",
                 "--config",
                 str(INSTANCE_FILES[0]),
                 "--help",
@@ -275,30 +254,30 @@ class RunnerControlTests(unittest.TestCase):
         instances["dotnet"]["account"]["subUid"]["start"] = 165536
         instances["dotnet"]["account"]["subGid"]["start"] = 165536
         with self.assertRaisesRegex(self.runnerctl.RunnerError, "overlapping subUid"):
-            self.runnerctl.validate_instances(instances)
+            validate_instances(instances)
 
     def test_short_subordinate_id_ranges_are_rejected(self) -> None:
         instances = copy.deepcopy(self.instances)
         instances["frontend"]["account"]["subUid"]["count"] = 65535
         with self.assertRaisesRegex(self.runnerctl.RunnerError, "at least 65536"):
-            self.runnerctl.validate_instances(instances)
+            validate_instances(instances)
 
     def test_gitlab_health_url_must_use_the_coordinator_hostname(self) -> None:
         instances = copy.deepcopy(self.instances)
         instances["frontend"]["gitlab"]["healthUrl"] = "https://other.example/health"
         with self.assertRaisesRegex(self.runnerctl.RunnerError, "same HTTPS hostname"):
-            self.runnerctl.validate_instances(instances)
+            validate_instances(instances)
 
     def test_default_job_image_must_match_the_allowlist(self) -> None:
         instances = copy.deepcopy(self.instances)
         instances["frontend"]["runner"]["allowedImages"] = ["docker.io/library/python:*"]
         with self.assertRaisesRegex(self.runnerctl.RunnerError, "match allowedImages"):
-            self.runnerctl.validate_instances(instances)
+            validate_instances(instances)
 
     def test_required_interface_is_optional_and_not_vpn_specific(self) -> None:
         instances = copy.deepcopy(self.instances)
         instances["frontend"]["network"]["requiredInterface"] = None
-        self.runnerctl.validate_instances(instances)
+        validate_instances(instances)
 
     def test_registered_config_preserves_registration_metadata(self) -> None:
         instance = self.instances["frontend"]

@@ -9,8 +9,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from runner_config import load_instances
-from runner_model import RunnerError, validate_instances
+from runnerctl.config import load_instances
+from runnerctl.model import RunnerError, validate_instances
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
