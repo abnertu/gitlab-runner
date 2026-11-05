@@ -61,143 +61,6 @@ class RunnerControlTests(unittest.TestCase):
             self.runnerctl.run(["fake", "private"], timeout=1)
         self.assertNotIn("private", str(raised.exception))
 
-    def test_reconcile_twice_change_and_failed_restart_retry(self) -> None:
-        instance = copy.deepcopy(self.instances["frontend"])
-        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
-            root = Path(directory)
-            entry = self.runnerctl.pwd.struct_passwd(
-                (
-                    instance["account"]["user"],
-                    "x",
-                    os.getuid(),
-                    os.getgid(),
-                    "",
-                    str(root),
-                    "/bin/bash",
-                )
-            )
-            paths = self.runnerctl.HostPaths(root / "subuid", root / "subgid", root / "run")
-            bus = paths.runtime / str(entry.pw_uid) / "bus"
-            bus.parent.mkdir(parents=True)
-            bus.touch()
-            platform = {
-                **self.platform,
-                "caAnchorDirectory": str(root / "anchors"),
-                "containerCertsDirectory": str(root / "certs"),
-            }
-            calls = []
-            active = False
-            image_present = False
-            fail_restart = False
-
-            def run_as(entry, command, **kwargs):
-                nonlocal active, image_present
-                calls.append(command)
-                if command[1:3] == ["image", "exists"]:
-                    return subprocess.CompletedProcess(command, 0 if image_present else 1)
-                if command[1:2] == ["pull"]:
-                    image_present = True
-                if "is-active" in command:
-                    return subprocess.CompletedProcess(command, 0 if active else 3)
-                if "restart" in command and fail_restart:
-                    raise self.runnerctl.RunnerError("restart failed")
-                if "start" in command or "restart" in command:
-                    active = True
-                return subprocess.CompletedProcess(command, 0)
-
-            for name in (
-                "require_root",
-                "check_prerequisites",
-                "verify_rootless_podman",
-            ):
-                stack.enter_context(mock.patch.object(self.runnerctl, name))
-            stack.enter_context(
-                mock.patch.object(self.runnerctl, "ensure_account", return_value=entry)
-            )
-
-            # Native allocation ownership is tested separately; here the private
-            # adapter keeps its simulated allocations inside this instance HOME.
-            def allocation(path, user, desired):
-                self.assertTrue(path.is_relative_to(root))
-                self.runnerctl.atomic_write(
-                    path,
-                    f"{user}:{desired['start']}:{desired['count']}\n",
-                    mode=0o644,
-                    uid=os.getuid(),
-                    gid=os.getgid(),
-                )
-
-            stack.enter_context(
-                mock.patch.object(
-                    self.runnerctl, "ensure_subordinate_range", side_effect=allocation
-                )
-            )
-            stack.enter_context(
-                mock.patch.object(
-                    self.runnerctl,
-                    "run",
-                    return_value=subprocess.CompletedProcess([], 0),
-                )
-            )
-            stack.enter_context(mock.patch.object(self.runnerctl, "run_as", side_effect=run_as))
-            inspect = stack.enter_context(
-                mock.patch.object(
-                    self.runnerctl,
-                    "inspect_manager",
-                    return_value="matches-declaration",
-                )
-            )
-            rendered = StringIO()
-            with redirect_stderr(rendered):
-                self.assertTrue(self.runnerctl.reconcile(instance, platform, paths=paths))
-            for label in (
-                "Checking prerequisites",
-                "Preparing account, sub-IDs and runtime",
-                "Reconciling trust and configuration",
-                "Preparing manager image",
-                "Converging Runner service",
-            ):
-                self.assertIn(label, rendered.getvalue())
-            files = [path for path in root.rglob("*") if path.is_file()]
-            before = {path: path.stat().st_ino for path in files}
-            calls.clear()
-            self.assertFalse(self.runnerctl.reconcile(instance, platform, paths=paths))
-            self.assertEqual(before, {path: path.stat().st_ino for path in files})
-            self.assertFalse(
-                any(
-                    "restart" in call or "pull" in call or "daemon-reload" in call for call in calls
-                )
-            )
-            instance["runner"]["memory"] = "8g"
-            instance["artifacts"]["registrationTemplate"] = instance["artifacts"][
-                "registrationTemplate"
-            ].replace('memory = "4g"', 'memory = "8g"')
-            fail_restart = True
-            failure_output = StringIO()
-            with (
-                redirect_stderr(failure_output),
-                self.assertRaisesRegex(self.runnerctl.RunnerError, "restart failed"),
-            ):
-                self.runnerctl.reconcile(instance, platform, paths=paths)
-            self.assertIn("[failed] Converging Runner service", failure_output.getvalue())
-            self.assertNotIn("[done] Converging Runner service", failure_output.getvalue())
-            self.assertTrue((root / "gitlab-runner/config/.reconcile.pending").exists())
-            fail_restart = False
-            self.assertTrue(self.runnerctl.reconcile(instance, platform, paths=paths))
-            self.assertFalse((root / "gitlab-runner/config/.reconcile.pending").exists())
-            self.assertFalse(self.runnerctl.reconcile(instance, platform, paths=paths))
-            inspect.return_value = "drifted"
-            fail_restart = True
-            with self.assertRaisesRegex(self.runnerctl.RunnerError, "restart failed"):
-                self.runnerctl.reconcile(instance, platform, paths=paths)
-            self.assertTrue((root / "gitlab-runner/config/.reconcile.pending").exists())
-            fail_restart = False
-            calls.clear()
-            self.assertTrue(self.runnerctl.reconcile(instance, platform, paths=paths))
-            self.assertTrue(any("restart" in call for call in calls))
-            inspect.return_value = "matches-declaration"
-            self.assertFalse(self.runnerctl.reconcile(instance, platform, paths=paths))
-
     def test_cli_accepts_no_token_argument(
         self,
     ) -> None:
@@ -675,6 +538,169 @@ class RunnerControlTests(unittest.TestCase):
         self.assertEqual(
             cleanup_arguments[1:5], ["network", "rm", "--force", cleanup_arguments[-1]]
         )
+
+
+class ReconcileTests(unittest.TestCase):
+    """Reconcile against a fake host: idempotence, retry and drift handling."""
+
+    STAGES = (
+        "Checking prerequisites",
+        "Preparing account, sub-IDs and runtime",
+        "Reconciling trust and configuration",
+        "Preparing manager image",
+        "Converging Runner service",
+    )
+
+    def setUp(self) -> None:
+        self.instance = copy.deepcopy(load_instances(INSTANCE_FILES)["frontend"])
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.entry = operations.pwd.struct_passwd(
+            (
+                self.instance["account"]["user"],
+                "x",
+                os.getuid(),
+                os.getgid(),
+                "",
+                str(self.root),
+                "/bin/bash",
+            )
+        )
+        self.paths = operations.HostPaths(
+            self.root / "subuid", self.root / "subgid", self.root / "run"
+        )
+        bus = self.paths.runtime / str(self.entry.pw_uid) / "bus"
+        bus.parent.mkdir(parents=True)
+        bus.touch()
+        self.platform = {
+            **PLATFORMS["arch"],
+            "caAnchorDirectory": str(self.root / "anchors"),
+            "containerCertsDirectory": str(self.root / "certs"),
+        }
+        self.calls: list[list[str]] = []
+        self.active = False
+        self.image_present = False
+        self.fail_restart = False
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        for name in ("require_root", "check_prerequisites", "verify_rootless_podman"):
+            stack.enter_context(mock.patch.object(operations, name))
+        stack.enter_context(
+            mock.patch.object(operations, "ensure_account", return_value=self.entry)
+        )
+        stack.enter_context(
+            mock.patch.object(operations, "ensure_subordinate_range", side_effect=self.allocate)
+        )
+        stack.enter_context(
+            mock.patch.object(operations, "run", return_value=subprocess.CompletedProcess([], 0))
+        )
+        stack.enter_context(mock.patch.object(operations, "run_as", side_effect=self.run_as))
+        self.inspect = stack.enter_context(
+            mock.patch.object(operations, "inspect_manager", return_value="matches-declaration")
+        )
+
+    def allocate(self, path: Path, user: str, desired: dict[str, int]) -> None:
+        # Native allocation ownership is tested separately; here the private
+        # adapter keeps its simulated allocations inside this instance HOME.
+        self.assertTrue(path.is_relative_to(self.root))
+        operations.atomic_write(
+            path,
+            f"{user}:{desired['start']}:{desired['count']}\n",
+            mode=0o644,
+            uid=os.getuid(),
+            gid=os.getgid(),
+        )
+
+    def run_as(self, _entry, command, **_kwargs):
+        self.calls.append(command)
+        if command[1:3] == ["image", "exists"]:
+            return subprocess.CompletedProcess(command, 0 if self.image_present else 1)
+        if command[1:2] == ["pull"]:
+            self.image_present = True
+        if "is-active" in command:
+            return subprocess.CompletedProcess(command, 0 if self.active else 3)
+        if "restart" in command and self.fail_restart:
+            raise operations.RunnerError("restart failed")
+        if "start" in command or "restart" in command:
+            self.active = True
+        return subprocess.CompletedProcess(command, 0)
+
+    def reconcile(self) -> bool:
+        return operations.reconcile(self.instance, self.platform, paths=self.paths)
+
+    @property
+    def pending(self) -> Path:
+        return self.root / "gitlab-runner/config/.reconcile.pending"
+
+    def restarted(self) -> bool:
+        return any("restart" in call for call in self.calls)
+
+    def change_memory(self) -> None:
+        self.instance["runner"]["memory"] = "8g"
+        artifacts = self.instance["artifacts"]
+        artifacts["registrationTemplate"] = artifacts["registrationTemplate"].replace(
+            'memory = "4g"', 'memory = "8g"'
+        )
+
+    def test_first_reconcile_reports_every_stage(self) -> None:
+        rendered = StringIO()
+        with redirect_stderr(rendered):
+            self.assertTrue(self.reconcile())
+        for stage in self.STAGES:
+            self.assertIn(stage, rendered.getvalue())
+
+    def test_second_reconcile_changes_nothing(self) -> None:
+        with redirect_stderr(StringIO()):
+            self.reconcile()
+        files = [path for path in self.root.rglob("*") if path.is_file()]
+        before = {path: path.stat().st_ino for path in files}
+        self.calls.clear()
+        with redirect_stderr(StringIO()):
+            self.assertFalse(self.reconcile())
+        self.assertEqual(before, {path: path.stat().st_ino for path in files})
+        mutating = ("restart", "pull", "daemon-reload")
+        self.assertFalse(any(word in call for call in self.calls for word in mutating))
+
+    def test_failed_restart_keeps_pending_and_the_next_run_retries(self) -> None:
+        with redirect_stderr(StringIO()):
+            self.reconcile()
+        self.change_memory()
+        self.fail_restart = True
+        failure = StringIO()
+        with (
+            redirect_stderr(failure),
+            self.assertRaisesRegex(operations.RunnerError, "restart failed"),
+        ):
+            self.reconcile()
+        self.assertIn("[failed] Converging Runner service", failure.getvalue())
+        self.assertNotIn("[done] Converging Runner service", failure.getvalue())
+        self.assertTrue(self.pending.exists())
+        self.fail_restart = False
+        with redirect_stderr(StringIO()):
+            self.assertTrue(self.reconcile())
+            self.assertFalse(self.pending.exists())
+            self.assertFalse(self.reconcile())
+
+    def test_manager_drift_forces_a_restart_until_it_succeeds(self) -> None:
+        with redirect_stderr(StringIO()):
+            self.reconcile()
+        self.inspect.return_value = "drifted"
+        self.fail_restart = True
+        with (
+            redirect_stderr(StringIO()),
+            self.assertRaisesRegex(operations.RunnerError, "restart failed"),
+        ):
+            self.reconcile()
+        self.assertTrue(self.pending.exists())
+        self.fail_restart = False
+        self.calls.clear()
+        with redirect_stderr(StringIO()):
+            self.assertTrue(self.reconcile())
+        self.assertTrue(self.restarted())
+        self.inspect.return_value = "matches-declaration"
+        with redirect_stderr(StringIO()):
+            self.assertFalse(self.reconcile())
 
 
 if __name__ == "__main__":
