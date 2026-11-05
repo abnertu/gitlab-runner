@@ -1,5 +1,4 @@
-"""Runner operations: account, CA, service and registration convergence,
-plus the read-only check, verify and status inspections."""
+"""Runner operations: converge, register, check, verify and inspect instances."""
 
 from __future__ import annotations
 
@@ -33,6 +32,7 @@ from nix_adapter import (
 )
 
 from .model import (
+    REGISTRATION_TIMESTAMPS,
     RunnerError,
     gitlab_hostname,
     manager_matches,
@@ -40,6 +40,9 @@ from .model import (
     render_registration_template,
     render_service,
 )
+
+PODMAN_IMAGE_MISSING = 1
+"""`podman image exists` status for an image that is not present."""
 
 
 @dataclass(frozen=True)
@@ -62,6 +65,12 @@ def run(
     env: dict[str, str] | None = None,
     timeout: float = 300,
 ) -> subprocess.CompletedProcess[str]:
+    """Run `argv` with a timeout; return the completed process.
+
+    Raise `RunnerError` naming only the executable on a timeout, or on a
+    nonzero exit while `check` is set. Arguments and output never appear in
+    the message, because they can hold a token.
+    """
     try:
         result = subprocess.run(
             argv,
@@ -101,11 +110,13 @@ def progress_task(scope: str, label: str, progress: Progress | None = None):
 
 
 def require_root() -> None:
+    """Raise `RunnerError` unless the process runs as root."""
     if os.geteuid() != 0:
         raise RunnerError("this command must run as root")
 
 
 def select_instance(instances: dict[str, Any], name: str) -> dict[str, Any]:
+    """The declared instance `name`; raise `RunnerError` listing the known ones."""
     try:
         return instances[name]
     except KeyError as error:
@@ -114,6 +125,10 @@ def select_instance(instances: dict[str, Any], name: str) -> dict[str, Any]:
 
 
 def required_interface_is_up(name: str | None, ip_path: str) -> None:
+    """Raise `RunnerError` unless network interface `name` exists and is up.
+
+    `None` means no interface is required.
+    """
     if name is None:
         return
     result = run([ip_path, "-json", "link", "show", "dev", name], capture=True, check=False)
@@ -125,6 +140,11 @@ def required_interface_is_up(name: str | None, ip_path: str) -> None:
 
 
 def ensure_account(instance: dict[str, Any], platform: dict[str, str]) -> pwd.struct_passwd:
+    """Return the Runner account, creating it and its home if it is absent.
+
+    Raise `RunnerError` if the declared UID belongs to another account, or if
+    an existing account differs from the declaration.
+    """
     account = instance["account"]
     try:
         entry = pwd.getpwnam(account["user"])
@@ -168,11 +188,6 @@ def ensure_account(instance: dict[str, Any], platform: dict[str, str]) -> pwd.st
             "Runner account must have a locked password; reconcile ownership manually"
         )
     return entry
-
-
-REGISTRATION_TIMESTAMPS = ("token_obtained_at", "token_expires_at")
-PODMAN_IMAGE_MISSING = 1
-"""`podman image exists` status for an image that is not present."""
 
 
 def registration_metadata(config_path: Path) -> dict[str, str]:
@@ -235,6 +250,7 @@ def run_as(
     capture: bool = False,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
+    """Run `argv` as the Runner account with its user bus and runtime directory."""
     runtime_dir = f"/run/user/{entry.pw_uid}"
     return run(
         [
@@ -256,6 +272,10 @@ def run_as(
 
 
 def ensure_directories(entry: pwd.struct_passwd) -> tuple[Path, Path, Path]:
+    """Create the account's private Runner directories.
+
+    Return the config, cache and systemd user unit directories.
+    """
     root = Path(entry.pw_dir) / "gitlab-runner"
     config_dir = root / "config"
     cache_dir = root / "cache"
@@ -273,6 +293,7 @@ def ensure_directories(entry: pwd.struct_passwd) -> tuple[Path, Path, Path]:
 
 
 def wait_for_path(path: Path, timeout: float = 30.0) -> None:
+    """Wait until `path` exists; raise `RunnerError` after `timeout` seconds."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if path.exists():
@@ -288,6 +309,11 @@ def reconcile_ca(
     platform: dict[str, str],
     before_change: Callable[[], None] | None = None,
 ) -> bool:
+    """Install or remove the GitLab CA for the manager, the host and Podman.
+
+    Return whether a certificate changed. `before_change` runs before each
+    mutation.
+    """
     hostname = gitlab_hostname(instance)
     service_name = instance["runner"]["serviceName"]
     manager_certificate = config_dir / "certs" / f"{hostname}.crt"
@@ -353,6 +379,7 @@ def verify_rootless_podman(
     entry: pwd.struct_passwd,
     platform: dict[str, str],
 ) -> None:
+    """Raise `RunnerError` unless the account runs rootless Podman 4.2.0+."""
     podman_path = platform["podman"]
     version_result = run_as(entry, [podman_path, "--version"], platform=platform, capture=True)
     version_match = re.search(r"(\d+)\.(\d+)\.(\d+)", version_result.stdout)
@@ -372,6 +399,7 @@ def verify_rootless_podman(
 
 
 def verify_aardvark(platform: dict[str, str]) -> None:
+    """Raise `RunnerError` unless aardvark-dns is newer than 1.10.0."""
     result = run([platform["aardvarkDns"], "--version"], capture=True)
     version = re.search(r"(\d+)\.(\d+)\.(\d+)", result.stdout + result.stderr)
     if version is None or tuple(map(int, version.groups())) <= (1, 10, 0):
@@ -379,6 +407,7 @@ def verify_aardvark(platform: dict[str, str]) -> None:
 
 
 def health_command(instance: dict[str, Any], platform: dict[str, str]) -> list[str]:
+    """The curl command line that checks the GitLab health URL."""
     command = [
         platform["curl"],
         "--fail",
@@ -397,6 +426,7 @@ def health_command(instance: dict[str, Any], platform: dict[str, str]) -> list[s
 
 
 def check_prerequisites(instance: dict[str, Any], platform: dict[str, str]) -> None:
+    """Raise `RunnerError` unless the host has every executable and interface."""
     required_interface_is_up(instance["network"].get("requiredInterface"), platform["ip"])
     executables = [
         platform[key]
@@ -440,6 +470,7 @@ def _check_impl(
 
 
 def check(instance_name: str, instance: dict[str, Any], platform: dict[str, str]) -> None:
+    """Check the host prerequisites of one instance without changing anything."""
     with progress_task("runnerctl check", "Running check") as progress:
         _check_impl(instance_name, instance, platform, progress=progress)
 
@@ -453,9 +484,11 @@ def _reconcile_impl(
 ) -> bool:
     """Converge one instance; return whether anything changed.
 
-    A pending marker is written before the first change and removed only
-    after the service runs as declared, so an interrupted run restarts the
-    service on the next one.
+    A pending marker is written before the first trust, configuration,
+    unit, image or service change, and removed only after the service runs
+    as declared, so an interrupted run restarts the service on the next one.
+    Account, sub-ID and user-manager preparation run before it; they are
+    idempotent and need no marker.
     """
     require_root()
     with progress.task("Checking prerequisites"):
@@ -636,6 +669,7 @@ def reconcile(
     paths: HostPaths = DEFAULT_PATHS,
     progress: Progress | None = None,
 ) -> bool:
+    """Converge one instance; return whether anything changed."""
     with progress_task("runnerctl reconcile", "Reconciling Runner", progress) as current:
         return _reconcile_impl(instance, platform, paths=paths, progress=current)
 
@@ -712,6 +746,7 @@ def register(
     *,
     progress: Progress | None = None,
 ) -> None:
+    """Register one instance with GitLab, using the token from the environment."""
     with progress_task("runnerctl register", "Registering Runner", progress) as current:
         _register_impl(instance, platform, progress=current)
 
@@ -721,6 +756,10 @@ def validate_job_network(
     platform: dict[str, str],
     entry: pwd.struct_passwd,
 ) -> None:
+    """Raise `RunnerError` unless a job container can resolve and reach GitLab.
+
+    The check uses a temporary Podman network, removed afterwards.
+    """
     service_name = instance["runner"]["serviceName"]
     network_name = f"runnerctl-verify-{service_name}-{os.getpid()}"
     run_as(
@@ -778,6 +817,7 @@ def validate_job_network(
 def inspect_manager(
     instance: dict[str, Any], platform: dict[str, str], entry: pwd.struct_passwd
 ) -> Literal["absent", "matches-declaration", "drifted"]:
+    """Compare the running manager container with the declaration."""
     result = run_as(
         entry,
         [
@@ -875,6 +915,7 @@ def _verify_impl(instance: dict[str, Any], platform: dict[str, str], *, progress
 
 
 def subordinate_range_matches(path: Path, user: str, desired: dict[str, int]) -> bool:
+    """Whether `path` allocates exactly the `desired` range to `user` once."""
     if not path.exists():
         return False
     expected = f"{user}:{desired['start']}:{desired['count']}"
@@ -887,6 +928,7 @@ def verify(
     *,
     progress: Progress | None = None,
 ) -> None:
+    """Verify that one instance runs as declared and can reach GitLab."""
     with progress_task("runnerctl verify", "Verifying Runner", progress) as current:
         _verify_impl(instance, platform, progress=current)
 
@@ -968,5 +1010,6 @@ def status(
     *,
     progress: Progress | None = None,
 ) -> None:
+    """Print the account, service and registration state of one instance."""
     with progress_task("runnerctl status", "Inspecting Runner status", progress) as current:
         _status_impl(instance_name, instance, platform, progress=current)

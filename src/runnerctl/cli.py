@@ -27,11 +27,13 @@ class VersionAction(argparse.Action):
         super().__init__(option_strings, dest, nargs=0, help="show the version and exit")
 
     def __call__(self, parser: argparse.ArgumentParser, *_: object) -> None:
+        """Print `runnerctl <version>` and exit."""
         print(f"runnerctl {importlib.metadata.version(PACKAGE)}")
         parser.exit()
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse the command line; argparse exits on invalid arguments."""
     parser = argparse.ArgumentParser(prog="runnerctl", description=DESCRIPTION)
     parser.add_argument("--version", action=VersionAction)
     parser.add_argument(
@@ -56,6 +58,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    """Run the selected command and return its exit status."""
     args = parse_args()
     # Every file loads, even for one instance: IDs and names must not collide.
     instances = load_instances(args.config)
@@ -85,6 +88,7 @@ def main() -> int:
 
 
 def main_cli() -> None:
+    """Console entry point: report `RunnerError`, timeouts and I/O errors briefly."""
     try:
         sys.exit(main())
     except subprocess.TimeoutExpired:
@@ -93,6 +97,6 @@ def main_cli() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
-    except (RunnerError, KeyError, ValueError, OSError) as error:
+    except (RunnerError, KeyError, ValueError, OSError, ImportError) as error:
         print(f"runnerctl: {error}", file=sys.stderr)
         sys.exit(1)

@@ -8,18 +8,16 @@ keys are rejected, so a typo never silently falls back to a default.
 
 from __future__ import annotations
 
-import re
 import tomllib
 from pathlib import Path
 from typing import Any, cast
 
-from .model import RunnerError, render_artifacts
+from .model import INSTANCE_NAME, RunnerError, render_artifacts
 
 PROVIDERS = ("gitlab",)
 MANAGER_IMAGE = "docker.io/gitlab/gitlab-runner:v18.10.1"
 VALIDATION_IMAGE = "docker.io/curlimages/curl:8.12.1"
 SUBORDINATE_ID_COUNT = 65536
-INSTANCE_NAME = re.compile(r"[a-z][a-z0-9-]{0,17}")
 
 SCHEMA: dict[str, Any] = {
     "extends": str,
@@ -75,6 +73,10 @@ PLATFORMS: dict[str, dict[str, str]] = {
 
 
 def detect_platform(os_release: Path = Path("/etc/os-release")) -> str:
+    """The supported platform named by `ID` in `os_release`.
+
+    Raise `RunnerError` if the file is unreadable or names another platform.
+    """
     try:
         fields = dict(
             line.split("=", 1) for line in os_release.read_text().splitlines() if "=" in line
@@ -88,6 +90,7 @@ def detect_platform(os_release: Path = Path("/etc/os-release")) -> str:
 
 
 def platform_paths(name: str) -> dict[str, str]:
+    """The executable and directory paths of platform `name`."""
     try:
         return PLATFORMS[name]
     except KeyError:

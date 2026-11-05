@@ -26,24 +26,10 @@ IMAGE_PATTERN = re.compile(
     r"(?:@sha256:[a-f0-9*?]{1,64}|:[A-Za-z0-9._*?-]+)$"
 )
 MEMORY_PATTERN = re.compile(r"^[1-9][0-9]*(?:[kKmMgGtT](?:[bB])?)?$")
-
-
-def toml_string(value: str) -> str:
-    return json.dumps(value, ensure_ascii=False)
-
-
-def toml_array(values: list[str]) -> str:
-    return json.dumps(values, ensure_ascii=False, separators=(",", ":"))
-
-
-def gitlab_hostname(instance: dict[str, Any]) -> str:
-    hostname = urlparse(str(instance["gitlab"]["url"])).hostname
-    if hostname is None:
-        raise RunnerError("GitLab URL does not contain a hostname")
-    return hostname
-
-
-INSTANCE_NAME = re.compile(r"[a-z][a-z0-9-]*")
+LATEST_TAG = ":latest"
+# An instance name of at most 18 characters keeps the account name
+# gitlab-runner-<name> within the 32-character limit.
+INSTANCE_NAME = re.compile(r"[a-z][a-z0-9-]{0,17}")
 ACCOUNT_NAME = re.compile(r"[a-z_][a-z0-9_-]*")
 SERVICE_NAME = re.compile(r"[A-Za-z0-9_.@-]+")
 INTERFACE_NAME = re.compile(r"[A-Za-z0-9_.:-]+")
@@ -52,6 +38,25 @@ MIN_SUBORDINATE_IDS = 65536
 MAX_SUBORDINATE_ID = 4_294_967_294
 SUBORDINATE_RANGES = ("subUid", "subGid")
 CA_SUFFIXES = {".crt", ".pem"}
+REGISTRATION_TIMESTAMPS = ("token_obtained_at", "token_expires_at")
+
+
+def toml_string(value: str) -> str:
+    """`value` as a TOML basic string."""
+    return json.dumps(value, ensure_ascii=False)
+
+
+def toml_array(values: list[str]) -> str:
+    """`values` as a compact TOML array of strings."""
+    return json.dumps(values, ensure_ascii=False, separators=(",", ":"))
+
+
+def gitlab_hostname(instance: dict[str, Any]) -> str:
+    """The hostname of the instance's GitLab URL; raise `RunnerError` if absent."""
+    hostname = urlparse(str(instance["gitlab"]["url"])).hostname
+    if hostname is None:
+        raise RunnerError("GitLab URL does not contain a hostname")
+    return hostname
 
 
 @dataclass
@@ -139,7 +144,7 @@ def _check_subordinate_ranges(name: str, account: dict[str, Any]) -> None:
 
 
 def _pinned(image: str) -> bool:
-    return bool(FIXED_IMAGE_PATTERN.fullmatch(image)) and not image.endswith(":latest")
+    return bool(FIXED_IMAGE_PATTERN.fullmatch(image)) and not image.endswith(LATEST_TAG)
 
 
 def _check_images(name: str, instance: dict[str, Any]) -> None:
@@ -155,7 +160,7 @@ def _check_images(name: str, instance: dict[str, Any]) -> None:
     if not _pinned(instance["validation"]["image"]):
         raise RunnerError(f"{name} validation image must be qualified and pinned")
     for pattern in [*allowed, *runner["allowedServices"]]:
-        if not IMAGE_PATTERN.fullmatch(pattern) or pattern.endswith(":latest"):
+        if not IMAGE_PATTERN.fullmatch(pattern) or pattern.endswith(LATEST_TAG):
             raise RunnerError(f"{name} has an invalid image allowlist pattern")
 
 
@@ -260,10 +265,12 @@ def render_artifacts(instance: dict[str, Any]) -> dict[str, Any]:
 
 
 def render_registration_template(instance: dict[str, Any]) -> str:
+    """The registration template that `gitlab-runner register` reads."""
     return instance["artifacts"]["registrationTemplate"]
 
 
 def render_config(instance: dict[str, Any], metadata: dict[str, str]) -> str:
+    """The manager config, with the existing registration appended when known."""
     policy = instance["artifacts"]["configPolicy"]
     config = policy["configPrefix"]
     if "token" not in metadata:
@@ -273,7 +280,7 @@ def render_config(instance: dict[str, Any], metadata: dict[str, str]) -> str:
     if "id" in metadata:
         fields.append(f"  id = {metadata['id']}")
     fields.append(f"  token = {toml_string(metadata['token'])}")
-    for key in ("token_obtained_at", "token_expires_at"):
+    for key in REGISTRATION_TIMESTAMPS:
         if key in metadata:
             fields.append(f"  {key} = {metadata[key]}")
     registration = registration.replace("@REGISTRATION_METADATA@", "\n".join(fields), 1)

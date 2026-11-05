@@ -26,9 +26,15 @@ target-version = "py313"
 select = [
     "E", "W", "F", "I", "B", "UP", "SIM", "RUF",
     "C901", "PLR0911", "PLR0912", "PLR0915",
+    # Public modules, classes, methods and functions carry a docstring.
+    "D100", "D101", "D102", "D103", "D104", "D106",
 ]
 # The formatter owns line length.
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test names state the behavior they guard.
+"tests/**" = ["D"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 10
