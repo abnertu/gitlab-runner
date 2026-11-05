@@ -123,6 +123,8 @@
               ]))
               pkgs.pyright
               pkgs.ruff
+              pkgs.git-cliff
+              pkgs.just
             ];
           };
         }
