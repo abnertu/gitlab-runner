@@ -1,4 +1,4 @@
-name: gitlab-runnerctl validation
+name: Validate Runner Controller
 
 on:
   push:
@@ -14,14 +14,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  check:
+  validate_runner_controller:
     name: Validate runnerctl on x86_64-linux
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Check out the repository
+      - name: Check Out the Repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Nix
         uses: cachix/install-nix-action@b85815f71a6de0ddee80b8a80a98d43f4bcc66c7 # v31
-      - name: Run the flake checks
+      - name: Run the Flake Checks
         run: nix flake check --no-update-lock-file --print-build-logs

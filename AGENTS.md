@@ -47,7 +47,18 @@ gitlab-runnerctl converges dedicated rootless Podman GitLab Runner instances on 
 - Apply the test rules to CI checks too.
 - Run the repo's entry points against real inputs or isolated fixtures.
 - Reject duplicate checks, source-text assertions, copied inventories and checks that only prove that a command or file exists.
-- Name each workflow, job and step by its target and its action.
+- Name CI files in kebab-case by purpose, such as `deploy-production.yml`.
+- Keep reserved host filenames, including `.gitlab-ci.yml`.
+- Name workflows in Title Case, such as `Deploy Production`.
+- Keep the repository name out of workflow names.
+- Name job IDs in snake_case, such as `build_image`.
+- Start each GitHub step name with a verb, such as `Install Dependencies` or `Run Tests`.
+- Preserve proper nouns and code identifiers when applying case.
+- Prefer a specific purpose, such as `deploy-production.yml`, over a vague name, such as `production.yml`.
+- Omit redundant host or artifact words, as in `github-action-build.yml` and `build-workflow.yml`.
+- Name each workflow, job and step by its target and action.
+- Keep job display names unique within the repository.
+- Update dispatch references, dependencies, release gates, required check contexts and badges together when renaming CI artifacts.
 - Propagate command failures.
 - Count a missing prerequisite or skipped required coverage as a failure.
 - After you change these rules, audit the repo against them.

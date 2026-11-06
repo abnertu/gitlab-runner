@@ -2,7 +2,7 @@
 
 Converge dedicated rootless Podman GitLab Runner instances, one system account per instance.
 
-[![gitlab-runnerctl validation](https://github.com/abnertu/gitlab-runner/actions/workflows/check.yml/badge.svg?branch=main)](https://github.com/abnertu/gitlab-runner/actions/workflows/check.yml) [![Python](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fabnertu%2Fgitlab-runner%2Fmain%2Fpyproject.toml&query=%24.project%5B%27requires-python%27%5D&label=Python&logo=python&logoColor=white&color=3776AB)](https://www.python.org/)
+[![Validate Runner Controller](https://github.com/abnertu/gitlab-runner/actions/workflows/validate-runner-controller.yml/badge.svg?branch=main)](https://github.com/abnertu/gitlab-runner/actions/workflows/validate-runner-controller.yml?query=branch%3Amain) [![Python](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fabnertu%2Fgitlab-runner%2Fmain%2Fpyproject.toml&query=%24.project%5B%27requires-python%27%5D&label=Python&logo=python&logoColor=white&color=3776AB)](https://www.python.org/)
 
 ## Install
 
