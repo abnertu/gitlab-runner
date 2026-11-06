@@ -4,17 +4,19 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import ExitStack, redirect_stderr
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest import mock
 
-from runnerctl import operations
+from runnerctl import cli, operations
 from runnerctl.config import PLATFORMS, load_instances
 from runnerctl.model import validate_instances
 
@@ -701,6 +703,184 @@ class ReconcileTests(unittest.TestCase):
         self.inspect.return_value = "matches-declaration"
         with redirect_stderr(StringIO()):
             self.assertFalse(self.reconcile())
+
+
+class RunnerStatusTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.instance = load_instances(INSTANCE_FILES)["frontend"]
+        account = self.instance["account"]
+        self.entry = operations.pwd.struct_passwd(
+            (account["user"], "x", account["uid"], account["uid"], "", str(self.root), "/bin/bash")
+        )
+        self.paths = operations.HostPaths(
+            self.root / "subuid", self.root / "subgid", self.root / "runtime"
+        )
+        for path, allocation in (
+            (self.paths.subuid, account["subUid"]),
+            (self.paths.subgid, account["subGid"]),
+        ):
+            path.write_text(f"{account['user']}:{allocation['start']}:{allocation['count']}\n")
+        self.socket_path = self.paths.runtime / str(self.entry.pw_uid) / "podman/podman.sock"
+        self.socket_path.parent.mkdir(parents=True)
+        podman_socket = socket.socket(socket.AF_UNIX)
+        self.addCleanup(podman_socket.close)
+        podman_socket.bind(str(self.socket_path))
+        self.registration = self.root / "gitlab-runner/config/config.toml"
+        self.registration.parent.mkdir(parents=True)
+        self.secret = "fixture-only-registration-value"
+        self.registration.write_text(f'[[runners]]\ntoken = "{self.secret}"\n')
+        self.service_state = "active"
+        self.container_missing = False
+        self.manager_state = {
+            "running": True,
+            "network": "host",
+            "privileged": False,
+            "image": "fixture-image",
+            "mounts": [
+                {"Type": "bind", "Source": source, "Destination": target, "RW": True}
+                for target, source in {
+                    "/etc/gitlab-runner": account["home"] + "/gitlab-runner/config",
+                    "/cache": account["home"] + "/gitlab-runner/cache",
+                    "/run/podman/podman.sock": f"/run/user/{self.entry.pw_uid}/podman/podman.sock",
+                }.items()
+            ],
+        }
+        self.native_calls = []
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(mock.patch.object(operations.os, "geteuid", return_value=0))
+        self.account_lookup = stack.enter_context(
+            mock.patch.object(operations.pwd, "getpwnam", return_value=self.entry)
+        )
+        stack.enter_context(mock.patch.object(operations, "DEFAULT_PATHS", self.paths))
+        stack.enter_context(
+            mock.patch.object(operations.subprocess, "run", side_effect=self.native)
+        )
+        for name in ("reconcile", "register", "verify", "operation_lock"):
+            stack.enter_context(
+                mock.patch.object(operations, name, side_effect=AssertionError("mutation"))
+            )
+        read_text = Path.read_text
+
+        def fixture_read(path, *args, **kwargs):
+            if not (path.is_relative_to(self.root) or path.is_relative_to(FIXTURES)):
+                raise AssertionError("status read outside isolated fixtures")
+            return read_text(path, *args, **kwargs)
+
+        stack.enter_context(
+            mock.patch.object(Path, "read_text", autospec=True, side_effect=fixture_read)
+        )
+
+    def native(self, argv, **kwargs):
+        self.native_calls.append(argv)
+        platform = PLATFORMS["arch"]
+        if platform["systemctl"] in argv:
+            self.assertIn("is-active", argv)
+            environment = kwargs["env"]
+            self.assertEqual(environment["XDG_RUNTIME_DIR"], str(self.socket_path.parents[1]))
+            code = 0 if self.service_state == "active" else 3
+            return subprocess.CompletedProcess(argv, code, self.service_state + "\n")
+        if platform["podman"] in argv:
+            command = argv[argv.index(platform["podman"]) + 1 :]
+            if command[0] == "inspect":
+                return subprocess.CompletedProcess(
+                    argv, int(self.container_missing), json.dumps(self.manager_state)
+                )
+            if command[:2] == ["image", "inspect"]:
+                return subprocess.CompletedProcess(argv, 0, "fixture-image\n")
+        raise AssertionError("unexpected native command")
+
+    def inspect(self):
+        stdout, stderr = StringIO(), StringIO()
+        arguments = [
+            "runnerctl",
+            "--platform",
+            "arch",
+            "-c",
+            str(INSTANCE_FILES[0]),
+            "status",
+            "frontend",
+        ]
+        with (
+            mock.patch.object(sys, "argv", arguments),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+            self.assertRaises(SystemExit) as exited,
+        ):
+            cli.main_cli()
+        self.assertEqual(exited.exception.code, 0, stderr.getvalue())
+        self.assertNotIn(self.secret, stdout.getvalue() + stderr.getvalue())
+        line = stdout.getvalue().strip()
+        name, fields = line.split(": ", 1)
+        self.assertEqual(name, "frontend")
+        return dict(field.split("=", 1) for field in fields.split(", "))
+
+    def test_cli_reports_healthy_isolated_state(self) -> None:
+        self.assertEqual(
+            self.inspect(),
+            {
+                "account": "present",
+                "subids": "ok",
+                "socket": "present",
+                "service": "active",
+                "container": "matches-declaration",
+                "registration": "present",
+            },
+        )
+
+    def test_missing_account_skips_all_native_probes(self) -> None:
+        self.account_lookup.side_effect = KeyError("fixture-account")
+        self.assertEqual(
+            self.inspect(),
+            {
+                "account": "missing",
+                "subids": "missing",
+                "socket": "missing",
+                "service": "unavailable",
+                "container": "absent",
+                "registration": "absent",
+            },
+        )
+        self.assertEqual(self.native_calls, [])
+
+    def test_cli_reports_drift_in_either_subordinate_allocation(self) -> None:
+        for path in (self.paths.subuid, self.paths.subgid):
+            with self.subTest(path=path):
+                declared = path.read_text()
+                path.write_text("fixture-other-account:1:65536\n")
+                self.assertEqual(self.inspect()["subids"], "drifted")
+                path.write_text(declared)
+
+    def test_missing_and_regular_socket_paths_report_missing(self) -> None:
+        self.socket_path.unlink()
+        self.assertEqual(self.inspect()["socket"], "missing")
+        self.socket_path.touch()
+        self.assertEqual(self.inspect()["socket"], "missing")
+
+    def test_cli_reports_inactive_and_unavailable_services(self) -> None:
+        for state, expected in (("inactive", "inactive"), ("", "unavailable")):
+            with self.subTest(state=state):
+                self.service_state = state
+                self.assertEqual(self.inspect()["service"], expected)
+
+    def test_cli_reports_drifted_and_missing_manager(self) -> None:
+        self.manager_state["image"] = "unexpected-image"
+        self.assertEqual(self.inspect()["container"], "drifted")
+        self.container_missing = True
+        self.assertEqual(self.inspect()["container"], "absent")
+
+    def test_cli_reports_absent_and_invalid_registration_without_values(self) -> None:
+        for content, expected in (
+            ("", "absent"),
+            ("[[runners]]\ntoken = 7\n", "invalid"),
+            (f'[[runners]]\ntoken = "{self.secret}', "invalid"),
+        ):
+            with self.subTest(expected=expected):
+                self.registration.write_text(content)
+                self.assertEqual(self.inspect()["registration"], expected)
 
 
 if __name__ == "__main__":

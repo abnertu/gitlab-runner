@@ -938,6 +938,7 @@ def _status_impl(
     instance: dict[str, Any],
     platform: dict[str, str],
     *,
+    paths: HostPaths,
     progress: Progress,
 ) -> None:
     require_root()
@@ -951,7 +952,7 @@ def _status_impl(
                 "service=unavailable, container=absent, registration=absent"
             )
         return
-    runtime_dir = f"/run/user/{entry.pw_uid}"
+    runtime_dir = str(paths.runtime / str(entry.pw_uid))
     environment = {
         "PATH": "/usr/bin",
         "HOME": entry.pw_dir,
@@ -982,7 +983,7 @@ def _status_impl(
         registered = "present" if "token" in registration_metadata(config_path) else "absent"
     except RunnerError:
         registered = "invalid"
-    socket_path = Path(f"/run/user/{entry.pw_uid}/podman/podman.sock")
+    socket_path = paths.runtime / str(entry.pw_uid) / "podman/podman.sock"
     socket_state = (
         "present"
         if socket_path.exists() and stat.S_ISSOCK(socket_path.stat().st_mode)
@@ -991,8 +992,8 @@ def _status_impl(
     account = instance["account"]
     subids = (
         "ok"
-        if subordinate_range_matches(Path("/etc/subuid"), entry.pw_name, account["subUid"])
-        and subordinate_range_matches(Path("/etc/subgid"), entry.pw_name, account["subGid"])
+        if subordinate_range_matches(paths.subuid, entry.pw_name, account["subUid"])
+        and subordinate_range_matches(paths.subgid, entry.pw_name, account["subGid"])
         else "drifted"
     )
     container = inspect_manager(instance, platform, entry)
@@ -1008,8 +1009,11 @@ def status(
     instance: dict[str, Any],
     platform: dict[str, str],
     *,
+    paths: HostPaths | None = None,
     progress: Progress | None = None,
 ) -> None:
     """Print the account, service and registration state of one instance."""
     with progress_task("runnerctl status", "Inspecting Runner status", progress) as current:
-        _status_impl(instance_name, instance, platform, progress=current)
+        _status_impl(
+            instance_name, instance, platform, paths=paths or DEFAULT_PATHS, progress=current
+        )
