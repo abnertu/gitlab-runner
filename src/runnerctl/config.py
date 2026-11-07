@@ -9,6 +9,7 @@ keys are rejected, so a typo never silently falls back to a default.
 from __future__ import annotations
 
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -70,6 +71,16 @@ PLATFORMS: dict[str, dict[str, str]] = {
         "containerCertsDirectory": "/etc/containers/certs.d",
     },
 }
+
+
+@dataclass(frozen=True)
+class HostPaths:
+    """Private filesystem seam; production roots cannot be overridden by CLI."""
+
+    subuid: Path = Path("/etc/subuid")
+    subgid: Path = Path("/etc/subgid")
+    runtime: Path = Path("/run/user")
+    home_root: Path = Path("/home")
 
 
 def detect_platform(os_release: Path = Path("/etc/os-release")) -> str:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import grp
 import json
 import os
 import pwd
@@ -14,12 +13,12 @@ import time
 import tomllib
 from collections.abc import Callable
 from contextlib import contextmanager
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, cast
 
 from nix_adapter import (
+    Change,
     Progress,
     atomic_write,
     ensure_directory,
@@ -27,11 +26,15 @@ from nix_adapter import (
     inspect_subordinate_range,
     read_managed,
     remove_managed_file,
+    render,
 )
 from nix_adapter import (
     operation_lock as _operation_lock,
 )
 
+from . import inspection
+from .config import HostPaths as HostPaths
+from .inspection import grp as grp
 from .model import (
     REGISTRATION_TIMESTAMPS,
     RunnerError,
@@ -44,15 +47,6 @@ from .model import (
 
 PODMAN_IMAGE_MISSING = 1
 """`podman image exists` status for an image that is not present."""
-
-
-@dataclass(frozen=True)
-class HostPaths:
-    """Private filesystem seam; production paths cannot be overridden by CLI."""
-
-    subuid: Path = Path("/etc/subuid")
-    subgid: Path = Path("/etc/subgid")
-    runtime: Path = Path("/run/user")
 
 
 DEFAULT_PATHS = HostPaths()
@@ -147,15 +141,8 @@ def ensure_account(instance: dict[str, Any], platform: dict[str, str]) -> pwd.st
     an existing account differs from the declaration.
     """
     account = instance["account"]
-    try:
-        entry = pwd.getpwnam(account["user"])
-    except KeyError:
-        try:
-            owner = pwd.getpwuid(account["uid"])
-        except KeyError:
-            owner = None
-        if owner is not None:
-            raise RunnerError(f"UID {account['uid']} is already owned by {owner.pw_name}") from None
+    entry = inspection.inspect_account(instance)
+    if entry is None:
         run(
             [
                 platform["useradd"],
@@ -171,17 +158,10 @@ def ensure_account(instance: dict[str, Any], platform: dict[str, str]) -> pwd.st
             ]
         )
         run([platform["usermod"], "--lock", account["user"]])
-        entry = pwd.getpwnam(account["user"])
+        entry = inspection.inspect_account(instance)
+        if entry is None:
+            raise RunnerError(f"Runner account was not created: {account['user']}")
 
-    if entry.pw_uid != account["uid"]:
-        raise RunnerError(f"{account['user']} already exists with a different UID")
-    if entry.pw_dir != account["home"]:
-        raise RunnerError(f"{account['user']} already exists with a different home")
-    if grp.getgrgid(entry.pw_gid).gr_name != account["user"]:
-        raise RunnerError(f"{account['user']} must use its dedicated primary group")
-    supplementary_groups = set(os.getgrouplist(entry.pw_name, entry.pw_gid)) - {entry.pw_gid}
-    if supplementary_groups:
-        raise RunnerError(f"{account['user']} must not have supplementary host roles")
     password = run([platform["passwd"], "--status", entry.pw_name], capture=True)
     fields = password.stdout.split()
     if len(fields) < 2 or fields[0] != entry.pw_name or fields[1] != "L":
@@ -476,6 +456,34 @@ def check(instance_name: str, instance: dict[str, Any], platform: dict[str, str]
         _check_impl(instance_name, instance, platform, progress=progress)
 
 
+def inspect_policy(
+    instance: dict[str, Any], platform: dict[str, str], *, paths: HostPaths | None = None
+) -> list[Change]:
+    """Inspect static policy without native commands or registration-content reads."""
+    return inspection.inspect_policy(instance, platform, paths=paths or DEFAULT_PATHS)
+
+
+def preflight(instance_name: str, instance: dict[str, Any], platform: dict[str, str]) -> None:
+    """Validate observable policy; runtime prerequisites remain explicitly deferred."""
+    require_root()
+    inspect_policy(instance, platform)
+    print(
+        f"{instance_name}: static policy checked; runtime prerequisites deferred to reconciliation"
+    )
+
+
+def plan(
+    instance_name: str, instance: dict[str, Any], platform: dict[str, str], *, as_json: bool = False
+) -> None:
+    """Print observable changes and explicitly deferred runtime checks."""
+    require_root()
+    changes = inspect_policy(instance, platform)
+    if as_json:
+        print(json.dumps([{"kind": change.kind, "text": change.text} for change in changes]))
+    else:
+        print(render(changes, f"{instance_name} Runner"))
+
+
 def _reconcile_impl(
     instance: dict[str, Any],
     platform: dict[str, str],
@@ -492,6 +500,7 @@ def _reconcile_impl(
     idempotent and need no marker.
     """
     require_root()
+    inspect_policy(instance, platform, paths=paths)
     with progress.task("Checking prerequisites"):
         check_prerequisites(instance, platform)
     with progress.task("Preparing account, sub-IDs and runtime"), progress.external_output():

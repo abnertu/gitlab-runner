@@ -590,6 +590,7 @@ class ReconcileTests(unittest.TestCase):
         self.addCleanup(stack.close)
         for name in ("require_root", "check_prerequisites", "verify_rootless_podman"):
             stack.enter_context(mock.patch.object(operations, name))
+        stack.enter_context(mock.patch.object(operations, "inspect_policy", return_value=[]))
         stack.enter_context(
             mock.patch.object(operations, "ensure_account", return_value=self.entry)
         )

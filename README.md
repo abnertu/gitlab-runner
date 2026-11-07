@@ -76,11 +76,23 @@ Pass every instance file on each call, so that names and IDs are checked across 
 | Command | Root | Action |
 | --- | --- | --- |
 | `validate` | no | Validate the instance declarations; it reads only the instance and CA files. |
+| `preflight <instance>` | yes | Check observable static policy before runtime preparation. |
+| `plan <instance> [--json]` | yes | Show static policy changes and deferred runtime checks. |
 | `check <instance>` | yes | Check the host prerequisites. |
 | `reconcile <instance>` | yes | Converge the account, sub-IDs, runtime, configuration, image and service. |
 | `register <instance>` | yes | Register with GitLab, with the token in `GITLAB_RUNNER_TOKEN`. |
 | `verify <instance>` | yes | Verify the service, manager image, socket and a disposable job network. |
 | `status <instance>` | yes | Show the account, sub-IDs, socket, service, container and registration. |
+
+Run `preflight` before installation or runtime preparation.
+Use `plan --json` for a list of `{kind, text}` observations.
+These commands inspect account identity, subordinate allocations, public policy and pending markers without native runtime commands.
+They inspect registration-file metadata without reading registration contents.
+A matching file mode does not establish matching configuration or registration.
+Deferred `-` observations do not claim runtime readiness or skip reconciliation.
+Reconciliation checks password locks, native commands, networking, GitLab health, services, images and containers.
+It rechecks static ownership before any native preparation.
+Restore a missing existing account home before reconciliation.
 
 The token never goes on the command line. Read it into the environment, so that it stays out of the shell history:
 

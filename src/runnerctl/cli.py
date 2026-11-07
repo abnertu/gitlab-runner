@@ -51,9 +51,11 @@ def parse_args() -> argparse.Namespace:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("validate")
-    for command in ("check", "reconcile", "register", "verify", "status"):
+    for command in ("check", "preflight", "plan", "reconcile", "register", "verify", "status"):
         command_parser = subparsers.add_parser(command)
         command_parser.add_argument("instance")
+        if command == "plan":
+            command_parser.add_argument("--json", action="store_true")
     return parser.parse_args()
 
 
@@ -71,6 +73,10 @@ def main() -> int:
     platform = platform_paths(args.platform or detect_platform())
     if args.command == "check":
         operations.check(args.instance, instance, platform)
+    elif args.command == "preflight":
+        operations.preflight(args.instance, instance, platform)
+    elif args.command == "plan":
+        operations.plan(args.instance, instance, platform, as_json=args.json)
     elif args.command == "status":
         operations.status(args.instance, instance, platform)
     else:
