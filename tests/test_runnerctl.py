@@ -16,6 +16,8 @@ from io import StringIO
 from pathlib import Path
 from unittest import mock
 
+from nix_adapter import ensure_subordinate_range
+
 from runnerctl import cli, operations
 from runnerctl.config import PLATFORMS, load_instances
 from runnerctl.model import validate_instances
@@ -594,7 +596,7 @@ class ReconcileTests(unittest.TestCase):
         stack.enter_context(
             mock.patch.object(operations, "ensure_subordinate_range", side_effect=self.allocate)
         )
-        stack.enter_context(
+        self.native_run = stack.enter_context(
             mock.patch.object(operations, "run", return_value=subprocess.CompletedProcess([], 0))
         )
         stack.enter_context(mock.patch.object(operations, "run_as", side_effect=self.run_as))
@@ -602,16 +604,12 @@ class ReconcileTests(unittest.TestCase):
             mock.patch.object(operations, "inspect_manager", return_value="matches-declaration")
         )
 
-    def allocate(self, path: Path, user: str, desired: dict[str, int]) -> None:
-        # Native allocation ownership is tested separately; here the private
-        # adapter keeps its simulated allocations inside this instance HOME.
+    def allocate(
+        self, path: Path, user: str, desired: dict[str, int], *, aliases: tuple[str, ...] = ()
+    ) -> None:
         self.assertTrue(path.is_relative_to(self.root))
-        operations.atomic_write(
-            path,
-            f"{user}:{desired['start']}:{desired['count']}\n",
-            mode=0o644,
-            uid=os.getuid(),
-            gid=os.getgid(),
+        ensure_subordinate_range(
+            path, user, desired, uid=os.getuid(), gid=os.getgid(), aliases=aliases
         )
 
     def run_as(self, _entry, command, **_kwargs):
@@ -644,6 +642,28 @@ class ReconcileTests(unittest.TestCase):
         artifacts["registrationTemplate"] = artifacts["registrationTemplate"].replace(
             'memory = "4g"', 'memory = "8g"'
         )
+
+    def test_numeric_alias_conflict_stops_reconcile_before_native_changes(self) -> None:
+        allocations = (
+            (self.paths.subuid, self.instance["account"]["subUid"]),
+            (self.paths.subgid, self.instance["account"]["subGid"]),
+        )
+        for target, _ in allocations:
+            with self.subTest(target=target):
+                for path, allocation in allocations:
+                    path.write_text(
+                        f"{self.entry.pw_name}:{allocation['start']}:{allocation['count']}\n"
+                    )
+                target.write_text(target.read_text() + f"{self.entry.pw_uid}:300000:65536\n")
+                before = {path: path.read_bytes() for path, _ in allocations}
+                self.calls.clear()
+                self.native_run.reset_mock()
+                with redirect_stderr(StringIO()), self.assertRaises(operations.RunnerError):
+                    self.reconcile()
+                self.assertEqual({path: path.read_bytes() for path, _ in allocations}, before)
+                self.native_run.assert_not_called()
+                self.assertEqual(self.calls, [])
+                self.assertFalse(self.pending.exists())
 
     def test_first_reconcile_reports_every_stage(self) -> None:
         rendered = StringIO()
@@ -852,6 +872,32 @@ class RunnerStatusTests(unittest.TestCase):
                 declared = path.read_text()
                 path.write_text("fixture-other-account:1:65536\n")
                 self.assertEqual(self.inspect()["subids"], "drifted")
+                path.write_text(declared)
+
+    def test_duplicate_account_allocations_report_drift_without_writes(self) -> None:
+        for path in (self.paths.subuid, self.paths.subgid):
+            declared = path.read_text()
+            with self.subTest(path=path):
+                path.write_text(declared + f"{self.entry.pw_name}:300000:65536\n")
+                before = path.read_bytes()
+                self.assertEqual(self.inspect()["subids"], "drifted")
+                self.assertEqual(path.read_bytes(), before)
+                path.write_text(declared)
+
+    def test_numeric_owner_aliases_share_account_identity_in_both_files(self) -> None:
+        fields = list(self.entry)
+        fields[3] += 7
+        self.entry = operations.pwd.struct_passwd(fields)
+        self.account_lookup.return_value = self.entry
+        for path in (self.paths.subuid, self.paths.subgid):
+            declared = path.read_text()
+            with self.subTest(path=path):
+                path.write_text(declared + f"{self.entry.pw_uid}:300000:65536\n")
+                before = path.read_bytes()
+                self.assertEqual(self.inspect()["subids"], "drifted")
+                self.assertEqual(path.read_bytes(), before)
+                path.write_text(declared.replace(self.entry.pw_name, str(self.entry.pw_uid)))
+                self.assertEqual(self.inspect()["subids"], "ok")
                 path.write_text(declared)
 
     def test_missing_and_regular_socket_paths_report_missing(self) -> None:

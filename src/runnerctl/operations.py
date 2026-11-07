@@ -24,6 +24,7 @@ from nix_adapter import (
     atomic_write,
     ensure_directory,
     ensure_subordinate_range,
+    inspect_subordinate_range,
     read_managed,
     remove_managed_file,
 )
@@ -534,8 +535,12 @@ def _prepare_account(
     """Ensure the account, its sub-IDs, its user manager and rootless Podman."""
     entry = ensure_account(instance, platform)
     account = instance["account"]
-    ensure_subordinate_range(paths.subuid, entry.pw_name, account["subUid"])
-    ensure_subordinate_range(paths.subgid, entry.pw_name, account["subGid"])
+    ensure_subordinate_range(
+        paths.subuid, entry.pw_name, account["subUid"], aliases=(str(entry.pw_uid),)
+    )
+    ensure_subordinate_range(
+        paths.subgid, entry.pw_name, account["subGid"], aliases=(str(entry.pw_uid),)
+    )
     run([platform["loginctl"], "enable-linger", entry.pw_name])
     run([platform["systemctl"], "start", f"user@{entry.pw_uid}.service"])
     wait_for_path(paths.runtime / str(entry.pw_uid) / "bus")
@@ -914,12 +919,14 @@ def _verify_impl(instance: dict[str, Any], platform: dict[str, str], *, progress
         validate_job_network(instance, platform, entry)
 
 
-def subordinate_range_matches(path: Path, user: str, desired: dict[str, int]) -> bool:
+def subordinate_range_matches(
+    path: Path, user: str, desired: dict[str, int], *, aliases: tuple[str, ...] = ()
+) -> bool:
     """Whether `path` allocates exactly the `desired` range to `user` once."""
-    if not path.exists():
+    try:
+        return inspect_subordinate_range(path, user, desired, aliases=aliases)
+    except RunnerError:
         return False
-    expected = f"{user}:{desired['start']}:{desired['count']}"
-    return [line.strip() for line in path.read_text().splitlines()].count(expected) == 1
 
 
 def verify(
@@ -992,8 +999,12 @@ def _status_impl(
     account = instance["account"]
     subids = (
         "ok"
-        if subordinate_range_matches(paths.subuid, entry.pw_name, account["subUid"])
-        and subordinate_range_matches(paths.subgid, entry.pw_name, account["subGid"])
+        if subordinate_range_matches(
+            paths.subuid, entry.pw_name, account["subUid"], aliases=(str(entry.pw_uid),)
+        )
+        and subordinate_range_matches(
+            paths.subgid, entry.pw_name, account["subGid"], aliases=(str(entry.pw_uid),)
+        )
         else "drifted"
     )
     container = inspect_manager(instance, platform, entry)
