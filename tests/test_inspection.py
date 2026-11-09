@@ -44,7 +44,11 @@ class InspectionCliTests(unittest.TestCase):
             (self.user, "x", self.uid, self.gid, "", account["home"], "/bin/bash")
         )
         self.paths = HostPaths(
-            self.root / "subuid", self.root / "subgid", self.root / "run", self.root / "homes"
+            self.root / "subuid",
+            self.root / "subgid",
+            self.root / "run",
+            self.root / "homes",
+            self.root / "proc",
         )
         self.home = self.paths.home_root / self.user
         self.platform = PLATFORMS["arch"] | {
@@ -53,7 +57,7 @@ class InspectionCliTests(unittest.TestCase):
         }
         self.lock_path = self.root / "runner.lock"
         self.real_lock = operations.operation_lock
-        self.real_info = inspection._info
+        self.real_info = inspection.path_info
         self.command = ""
         self.present = False
         self.private = self.home / "gitlab-runner/config/config.toml"
@@ -61,7 +65,9 @@ class InspectionCliTests(unittest.TestCase):
         stack = ExitStack()
         self.addCleanup(stack.close)
         stack.enter_context(mock.patch.object(operations, "DEFAULT_PATHS", self.paths))
-        stack.enter_context(mock.patch.object(inspection, "_info", side_effect=self.system_info))
+        stack.enter_context(
+            mock.patch.object(inspection, "path_info", side_effect=self.system_info)
+        )
         stack.enter_context(mock.patch.object(cli, "platform_paths", return_value=self.platform))
         stack.enter_context(mock.patch.object(operations.os, "geteuid", return_value=0))
         self.account_lookup = stack.enter_context(
@@ -112,7 +118,7 @@ class InspectionCliTests(unittest.TestCase):
         return info
 
     def lock(self):
-        self.assertEqual(self.command, "reconcile")
+        self.assertIn(self.command, {"reconcile", "purge"})
         return self.real_lock(self.lock_path)
 
     def account(self, user):
@@ -277,7 +283,7 @@ class InspectionCliTests(unittest.TestCase):
 
     def test_foreign_ownership_is_rejected_even_when_running_as_root(self):
         self.ready()
-        original = inspection._info
+        original = inspection.path_info
 
         def foreign_owner(path):
             info = original(path)
@@ -288,7 +294,7 @@ class InspectionCliTests(unittest.TestCase):
             return info
 
         before = self.snapshot()
-        with mock.patch.object(inspection, "_info", side_effect=foreign_owner):
+        with mock.patch.object(inspection, "path_info", side_effect=foreign_owner):
             self.invoke("preflight", expected=1)
             self.invoke("plan", expected=1)
         self.assertEqual(self.snapshot(), before)
@@ -296,7 +302,7 @@ class InspectionCliTests(unittest.TestCase):
 
     def test_foreign_system_allocations_fail_before_native_preparation(self):
         self.ready()
-        original = inspection._info
+        original = inspection.path_info
         for target in (self.paths.subuid, self.paths.subgid):
 
             def foreign_owner(path, target=target):
@@ -309,7 +315,7 @@ class InspectionCliTests(unittest.TestCase):
 
             self.lock_path.touch(mode=0o600)
             before = self.snapshot()
-            with mock.patch.object(inspection, "_info", side_effect=foreign_owner):
+            with mock.patch.object(inspection, "path_info", side_effect=foreign_owner):
                 for command in ("preflight", "plan", "reconcile"):
                     self.invoke(command, expected=1)
             self.assertEqual(self.snapshot(), before)
@@ -359,6 +365,7 @@ class InspectionCliTests(unittest.TestCase):
         self.unit.symlink_to(sentinel)
         self.lock_path.touch(mode=0o600)
         before = self.snapshot()
-        self.invoke("reconcile", expected=1)
+        _, error = self.invoke("reconcile", expected=1)
+        self.assertIn("unsafe", error)
         self.assertEqual(self.snapshot(), before)
         self.native.assert_not_called()

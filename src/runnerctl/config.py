@@ -58,6 +58,7 @@ PLATFORMS: dict[str, dict[str, str]] = {
         "curl": "/usr/bin/curl",
         "env": "/usr/bin/env",
         "podman": "/usr/bin/podman",
+        "podmanSocketUnit": "/usr/lib/systemd/user/podman.socket",
         "ip": "/usr/bin/ip",
         "aardvarkDns": "/usr/lib/podman/aardvark-dns",
         "trust": "/usr/bin/trust",
@@ -81,6 +82,7 @@ class HostPaths:
     subgid: Path = Path("/etc/subgid")
     runtime: Path = Path("/run/user")
     home_root: Path = Path("/home")
+    proc_root: Path = Path("/proc")
 
 
 def detect_platform(os_release: Path = Path("/etc/os-release")) -> str:

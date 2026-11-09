@@ -457,10 +457,16 @@ def check(instance_name: str, instance: dict[str, Any], platform: dict[str, str]
 
 
 def inspect_policy(
-    instance: dict[str, Any], platform: dict[str, str], *, paths: HostPaths | None = None
+    instance: dict[str, Any],
+    platform: dict[str, str],
+    *,
+    paths: HostPaths | None = None,
+    retirement_allowed: bool = True,
 ) -> list[Change]:
     """Inspect static policy without native commands or registration-content reads."""
-    return inspection.inspect_policy(instance, platform, paths=paths or DEFAULT_PATHS)
+    return inspection.inspect_policy(
+        instance, platform, paths=paths or DEFAULT_PATHS, retirement_allowed=retirement_allowed
+    )
 
 
 def preflight(instance_name: str, instance: dict[str, Any], platform: dict[str, str]) -> None:
@@ -500,7 +506,7 @@ def _reconcile_impl(
     idempotent and need no marker.
     """
     require_root()
-    inspect_policy(instance, platform, paths=paths)
+    inspect_policy(instance, platform, paths=paths, retirement_allowed=False)
     with progress.task("Checking prerequisites"):
         check_prerequisites(instance, platform)
     with progress.task("Preparing account, sub-IDs and runtime"), progress.external_output():
@@ -518,8 +524,8 @@ def _reconcile_impl(
     retry_pending = pending.exists()
     with progress.task("Preparing user services"), progress.external_output():
         if unit_changed or retry_pending:
-            _user_systemctl(entry, platform, "daemon-reload")
-        _user_systemctl(entry, platform, "enable", "--now", "podman.socket")
+            user_systemctl(entry, platform, "daemon-reload")
+        user_systemctl(entry, platform, "enable", "--now", "podman.socket")
     with progress.task("Preparing manager image"):
         image_pulled = _ensure_manager_image(instance, platform, entry, mark_pending, progress)
     with progress.task("Converging Runner service"), progress.external_output():
@@ -608,7 +614,7 @@ def _write_configuration(
     return template_changed or config_changed, unit_changed
 
 
-def _user_systemctl(
+def user_systemctl(
     entry: pwd.struct_passwd, platform: dict[str, str], *args: str, query: bool = False
 ) -> subprocess.CompletedProcess[str]:
     """Run `systemctl --user` as the Runner account.
@@ -664,15 +670,15 @@ def _converge_service(
     drifted from the declaration (which forces a restart).
     """
     unit = f"{instance['runner']['serviceName']}.service"
-    _user_systemctl(entry, platform, "enable", unit)
-    active = _user_systemctl(entry, platform, "is-active", unit, query=True).returncode == 0
+    user_systemctl(entry, platform, "enable", unit)
+    active = user_systemctl(entry, platform, "is-active", unit, query=True).returncode == 0
     drift = active and inspect_manager(instance, platform, entry) != "matches-declaration"
     if drift:
         mark_pending()
     if not active:
-        _user_systemctl(entry, platform, "start", unit)
+        user_systemctl(entry, platform, "start", unit)
     elif restart or drift:
-        _user_systemctl(entry, platform, "restart", unit)
+        user_systemctl(entry, platform, "restart", unit)
     return not active, drift
 
 
@@ -680,12 +686,12 @@ def reconcile(
     instance: dict[str, Any],
     platform: dict[str, str],
     *,
-    paths: HostPaths = DEFAULT_PATHS,
+    paths: HostPaths | None = None,
     progress: Progress | None = None,
 ) -> bool:
     """Converge one instance; return whether anything changed."""
     with progress_task("runnerctl reconcile", "Reconciling Runner", progress) as current:
-        return _reconcile_impl(instance, platform, paths=paths, progress=current)
+        return _reconcile_impl(instance, platform, paths=paths or DEFAULT_PATHS, progress=current)
 
 
 def _register_impl(
@@ -829,11 +835,19 @@ def validate_job_network(
 
 
 def inspect_manager(
-    instance: dict[str, Any], platform: dict[str, str], entry: pwd.struct_passwd
+    instance: dict[str, Any],
+    platform: dict[str, str],
+    entry: pwd.struct_passwd,
+    *,
+    probe: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
 ) -> Literal["absent", "matches-declaration", "drifted"]:
     """Compare the running manager container with the declaration."""
-    result = run_as(
-        entry,
+
+    def native_probe(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        return run_as(entry, argv, platform=platform, capture=True, check=False)
+
+    selected_probe = probe or native_probe
+    result = selected_probe(
         [
             platform["podman"],
             "inspect",
@@ -842,14 +856,10 @@ def inspect_manager(
             '"privileged":{{json .HostConfig.Privileged}},"mounts":{{json .Mounts}},"image":{{json .Image}}}',
             instance["runner"]["serviceName"],
         ],
-        platform=platform,
-        capture=True,
-        check=False,
     )
     if result.returncode != 0:
         return "absent"
-    image = run_as(
-        entry,
+    image = selected_probe(
         [
             platform["podman"],
             "image",
@@ -858,9 +868,6 @@ def inspect_manager(
             "{{.Id}}",
             instance["runner"]["managerImage"],
         ],
-        platform=platform,
-        capture=True,
-        check=False,
     )
     try:
         matches = image.returncode == 0 and manager_matches(
@@ -1037,3 +1044,17 @@ def status(
         _status_impl(
             instance_name, instance, platform, paths=paths or DEFAULT_PATHS, progress=current
         )
+
+
+def purge(
+    instance: dict[str, Any],
+    platform: dict[str, str],
+    *,
+    paths: HostPaths | None = None,
+    progress: Progress | None = None,
+) -> bool:
+    """Retire the declared public policy while retaining registration and data."""
+    from . import retirement
+
+    with progress_task("runnerctl purge", "Retiring Runner", progress):
+        return retirement.purge(instance, platform, paths=paths or DEFAULT_PATHS)

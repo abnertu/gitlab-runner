@@ -51,7 +51,16 @@ def parse_args() -> argparse.Namespace:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("validate")
-    for command in ("check", "preflight", "plan", "reconcile", "register", "verify", "status"):
+    for command in (
+        "check",
+        "preflight",
+        "plan",
+        "reconcile",
+        "purge",
+        "register",
+        "verify",
+        "status",
+    ):
         command_parser = subparsers.add_parser(command)
         command_parser.add_argument("instance")
         if command == "plan":
@@ -84,6 +93,9 @@ def main() -> int:
         with operations.operation_lock():
             if args.command == "reconcile":
                 changed = operations.reconcile(instance, platform)
+                print(f"{args.instance}: {'changed' if changed else 'unchanged'}")
+            elif args.command == "purge":
+                changed = operations.purge(instance, platform)
                 print(f"{args.instance}: {'changed' if changed else 'unchanged'}")
             elif args.command == "register":
                 operations.register(instance, platform)

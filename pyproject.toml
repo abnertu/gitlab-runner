@@ -15,6 +15,9 @@ dependencies = [
 [project.scripts]
 runnerctl = "runnerctl.cli:main_cli"
 
+[tool.setuptools.package-data]
+runnerctl = ["retirement.conf"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

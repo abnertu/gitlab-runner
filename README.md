@@ -80,6 +80,7 @@ Pass every instance file on each call, so that names and IDs are checked across 
 | `plan <instance> [--json]` | yes | Show static policy changes and deferred runtime checks. |
 | `check <instance>` | yes | Check the host prerequisites. |
 | `reconcile <instance>` | yes | Converge the account, sub-IDs, runtime, configuration, image and service. |
+| `purge <instance>` | yes | Retire declared services and public policy; retain registrations and data. |
 | `register <instance>` | yes | Register with GitLab, with the token in `GITLAB_RUNNER_TOKEN`. |
 | `verify <instance>` | yes | Verify the service, manager image, socket and a disposable job network. |
 | `status <instance>` | yes | Show the account, sub-IDs, socket, service, container and registration. |
@@ -93,6 +94,26 @@ Deferred `-` observations do not claim runtime readiness or skip reconciliation.
 Reconciliation checks password locks, native commands, networking, GitLab health, services, images and containers.
 It rechecks static ownership before any native preparation.
 Restore a missing existing account home before reconciliation.
+
+Run `purge <instance>` to stop declared services and retire their matching public policy.
+It removes the user unit, enablement links, registration template and declared CA copies.
+It retains accounts, subordinate allocations, images, cache, volumes and the complete runtime configuration.
+Stopping the active service can remove its disposable manager through the existing unit commands.
+Stopped containers and unrelated containers remain untouched.
+Purge refuses foreign ownership, policy drift, unsupported unit overrides and a running orphan manager.
+It requires the existing user bus, Podman 4.8 or later, and initialized default overlay storage with SQLite.
+The default engine runtime and its current-boot readiness marker must already exist.
+Retirement queries use fixed storage and runtime paths with packaged engine settings.
+Custom storage layouts are unsupported by purge.
+It does not prepare missing prerequisites.
+
+A `.purge.pending` marker records retirement progress and the original public policy digest.
+Retry failed retirement with the original declaration and required prerequisites.
+Keep the original public CA source available until retirement completes.
+Reconciliation refuses unfinished retirement.
+Preflight and plan report its marker without changing it.
+Purge preserves existing `.reconcile.pending` and `.trust.pending` markers.
+Repeated purge checks retired runtime state and reports unchanged.
 
 The token never goes on the command line. Read it into the environment, so that it stays out of the shell history:
 
