@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import operations
+from . import diagnostics, operations
 from .config import detect_platform, load_instances, platform_paths
 from .model import RunnerError, validate_instances
 
@@ -36,6 +36,9 @@ def parse_args() -> argparse.Namespace:
     """Parse the command line; argparse exits on invalid arguments."""
     parser = argparse.ArgumentParser(prog="runnerctl", description=DESCRIPTION)
     parser.add_argument("--version", action=VersionAction)
+    parser.add_argument(
+        "--verbose", action="store_true", help="show public native command diagnostics"
+    )
     parser.add_argument(
         "-c",
         "--config",
@@ -71,6 +74,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     """Run the selected command and return its exit status."""
     args = parse_args()
+    with diagnostics.configured(verbose=args.verbose):
+        return _dispatch(args)
+
+
+def _dispatch(args: argparse.Namespace) -> int:
     # Every file loads, even for one instance: IDs and names must not collide.
     instances = load_instances(args.config)
     validate_instances(instances)
@@ -116,5 +124,5 @@ def main_cli() -> None:
         )
         sys.exit(1)
     except (RunnerError, KeyError, ValueError, OSError, ImportError) as error:
-        print(f"runnerctl: {error}", file=sys.stderr)
+        print(f"runnerctl: {diagnostics.redacted(str(error))}", file=sys.stderr)
         sys.exit(1)

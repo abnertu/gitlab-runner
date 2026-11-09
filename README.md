@@ -68,7 +68,7 @@ allowed_services = []
 ## Usage
 
 ```bash
-runnerctl -c frontend.toml -c dotnet.toml [--platform arch] <command> [instance]
+runnerctl -c frontend.toml -c dotnet.toml [--platform arch] [--verbose] <command> [instance]
 ```
 
 Pass every instance file on each call, so that names and IDs are checked across the whole set. The platform selects the host executable paths. When you omit it, runnerctl reads it from `/etc/os-release`.
@@ -84,6 +84,13 @@ Pass every instance file on each call, so that names and IDs are checked across 
 | `register <instance>` | yes | Register with GitLab, with the token in `GITLAB_RUNNER_TOKEN`. |
 | `verify <instance>` | yes | Verify the service, manager image, socket and a disposable job network. |
 | `status <instance>` | yes | Show the account, sub-IDs, socket, service, container and registration. |
+
+Use `--verbose` before the command to show public native diagnostics on stderr.
+JSON plans remain on stdout.
+Public command failures retain both streams, including partial timeout output.
+Diagnostics omit command arguments and redact authentication tokens, proxy values, and URI credentials.
+Registration, Runner verification, and unrestricted runtime inspection output remain suppressed in both modes.
+Health probes discard HTTP response bodies and ignore curl startup configuration.
 
 Run `preflight` before installation or runtime preparation.
 Use `plan --json` for a list of `{kind, text}` observations.

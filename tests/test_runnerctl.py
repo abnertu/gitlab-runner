@@ -839,6 +839,66 @@ class RunnerStatusTests(unittest.TestCase):
         self.assertEqual(name, "frontend")
         return dict(field.split("=", 1) for field in fields.split(", "))
 
+    def test_status_native_failure_retains_both_diagnostic_streams(self) -> None:
+        original = self.native
+
+        def native(argv, **kwargs):
+            if PLATFORMS["arch"]["systemctl"] in argv:
+                return subprocess.CompletedProcess(argv, 2, "unavailable", "public status failure")
+            return original(argv, **kwargs)
+
+        output = StringIO()
+        arguments = [
+            "runnerctl",
+            "--platform",
+            "arch",
+            "-c",
+            str(INSTANCE_FILES[0]),
+            "status",
+            "frontend",
+        ]
+        with (
+            mock.patch.object(operations.subprocess, "run", side_effect=native),
+            redirect_stderr(output),
+            mock.patch.object(sys, "argv", arguments),
+            redirect_stdout(StringIO()),
+            self.assertRaises(SystemExit) as exited,
+        ):
+            cli.main_cli()
+        self.assertEqual(exited.exception.code, 0)
+        self.assertIn("unavailable", output.getvalue())
+        self.assertIn("public status failure", output.getvalue())
+
+    def test_status_timeout_retains_partial_streams_and_fails(self) -> None:
+        failure = subprocess.TimeoutExpired(
+            ["fake", "private-argument"],
+            30,
+            output=b"partial status glrt-fixture",
+            stderr=b"partial status error",
+        )
+        stdout, stderr = StringIO(), StringIO()
+        arguments = [
+            "runnerctl",
+            "--platform",
+            "arch",
+            "-c",
+            str(INSTANCE_FILES[0]),
+            "status",
+            "frontend",
+        ]
+        with (
+            mock.patch.object(operations.subprocess, "run", side_effect=failure),
+            mock.patch.object(sys, "argv", arguments),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+            self.assertRaises(SystemExit) as exited,
+        ):
+            cli.main_cli()
+        self.assertEqual(exited.exception.code, 1)
+        self.assertIn("partial status <redacted>", stderr.getvalue())
+        self.assertIn("partial status error", stderr.getvalue())
+        self.assertNotIn("private-argument", stdout.getvalue() + stderr.getvalue())
+
     def test_cli_reports_healthy_isolated_state(self) -> None:
         self.assertEqual(
             self.inspect(),

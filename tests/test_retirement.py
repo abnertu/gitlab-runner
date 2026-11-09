@@ -178,7 +178,9 @@ class RetirementCliTests(unittest.TestCase):
             values["MainPID"] = "4242" if self.active else "0"
         return values
 
-    def native(self, entry, argv, *, platform, capture=False, check=True):
+    def native(
+        self, entry, argv, *, platform, capture=False, check=True, public=False, expected=(0,)
+    ):
         self.assertEqual(entry.pw_uid, self.f.uid)
         self.assertEqual(platform, self.f.platform)
         args = argv[1:]

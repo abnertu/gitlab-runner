@@ -241,6 +241,7 @@ def _podman(context: _Context, args: list[str]) -> subprocess.CompletedProcess[s
             platform=context.platform,
             capture=True,
             check=False,
+            public=True,
         )
         match = re.fullmatch(
             r"podman version (\d+)\.(\d+)\.(\d+)(?:[^\n]*)", version.stdout.strip()
@@ -251,7 +252,13 @@ def _podman(context: _Context, args: list[str]) -> subprocess.CompletedProcess[s
             )
         context.engine_checked = True
     return operations.run_as(
-        context.entry, [*prefix, *args], platform=context.platform, capture=True, check=False
+        context.entry,
+        [*prefix, *args],
+        platform=context.platform,
+        capture=True,
+        check=False,
+        public=True,
+        expected=(0, 1) if args[:2] == ["container", "exists"] else (0,),
     )
 
 
@@ -454,7 +461,7 @@ def _retire(context: _Context, intent: RetirementIntent) -> None:
             remove_managed_file(policy.path)
     operations.user_systemctl(context.entry, context.platform, "daemon-reload")
     if intent["trust"]:
-        operations.run([context.platform["trust"], "extract-compat"])
+        operations.run([context.platform["trust"], "extract-compat"], public=True)
     _quiescent(context, _states(context))
     _check_directories(context)
     for policy in context.policies.values():

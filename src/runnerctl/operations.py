@@ -32,7 +32,7 @@ from nix_adapter import (
     operation_lock as _operation_lock,
 )
 
-from . import inspection
+from . import diagnostics, inspection
 from .config import HostPaths as HostPaths
 from .inspection import grp as grp
 from .model import (
@@ -59,27 +59,48 @@ def run(
     capture: bool = False,
     env: dict[str, str] | None = None,
     timeout: float = 300,
+    public: bool = False,
+    expected: tuple[int, ...] = (0,),
 ) -> subprocess.CompletedProcess[str]:
-    """Run `argv` with a timeout; return the completed process.
+    """Run a command; report streams only for explicitly public operations.
 
-    Raise `RunnerError` naming only the executable on a timeout, or on a
-    nonzero exit while `check` is set. Arguments and output never appear in
-    the message, because they can hold a token.
+    Arguments and environment never appear in diagnostics. Sensitive commands
+    retain only an executable/status summary, including in verbose mode.
     """
+    if not argv:
+        raise ValueError("native command is required")
+    executable = Path(argv[0]).name
+    if public and diagnostics.verbose():
+        diagnostics.emit(f"+ {executable}")
     try:
         result = subprocess.run(
             argv,
             check=False,
             text=True,
-            stdout=subprocess.PIPE if capture else None,
-            stderr=subprocess.PIPE if capture else None,
+            capture_output=True,
             env=env,
             timeout=timeout,
         )
-    except subprocess.TimeoutExpired:
-        raise RunnerError(f"command timed out after {timeout}s: {argv[0]}") from None
+    except subprocess.TimeoutExpired as error:
+        message = f"command timed out after {timeout}s: {executable}"
+        if public:
+            message += "\n" + diagnostics.streams(error.stdout, error.stderr)
+        raise RunnerError(message) from None
+    except OSError as error:
+        raise RunnerError(
+            f"command could not start: {executable} ({type(error).__name__})"
+        ) from None
     if check and result.returncode != 0:
-        raise RunnerError(f"command failed with exit code {result.returncode}: {argv[0]}")
+        message = f"command failed with exit code {result.returncode}: {executable}"
+        if public:
+            message += "\n" + diagnostics.streams(result.stdout, result.stderr)
+        raise RunnerError(message)
+    if (
+        public
+        and (diagnostics.verbose() or not capture or result.returncode not in expected)
+        and (result.stdout or result.stderr)
+    ):
+        diagnostics.emit(diagnostics.streams(result.stdout, result.stderr))
     return result
 
 
@@ -94,7 +115,7 @@ def operation_lock(path: Path = Path("/run/lock/runnerctl.lock")):
 def progress_task(scope: str, label: str, progress: Progress | None = None):
     """Run a lifecycle boundary and close an owned renderer safely."""
     owner = progress is None
-    current = progress or Progress(scope, verbose=False)
+    current = progress or Progress(scope, verbose=diagnostics.verbose())
     try:
         with current.task(label):
             yield current
@@ -126,7 +147,9 @@ def required_interface_is_up(name: str | None, ip_path: str) -> None:
     """
     if name is None:
         return
-    result = run([ip_path, "-json", "link", "show", "dev", name], capture=True, check=False)
+    result = run(
+        [ip_path, "-json", "link", "show", "dev", name], capture=True, check=False, public=True
+    )
     if result.returncode != 0:
         raise RunnerError(f"required network interface is missing: {name}")
     links = json.loads(result.stdout)
@@ -155,14 +178,15 @@ def ensure_account(instance: dict[str, Any], platform: dict[str, str]) -> pwd.st
                 str(account["uid"]),
                 "--user-group",
                 account["user"],
-            ]
+            ],
+            public=True,
         )
-        run([platform["usermod"], "--lock", account["user"]])
+        run([platform["usermod"], "--lock", account["user"]], public=True)
         entry = inspection.inspect_account(instance)
         if entry is None:
             raise RunnerError(f"Runner account was not created: {account['user']}")
 
-    password = run([platform["passwd"], "--status", entry.pw_name], capture=True)
+    password = run([platform["passwd"], "--status", entry.pw_name], capture=True, public=True)
     fields = password.stdout.split()
     if len(fields) < 2 or fields[0] != entry.pw_name or fields[1] != "L":
         raise RunnerError(
@@ -230,6 +254,8 @@ def run_as(
     platform: dict[str, str],
     capture: bool = False,
     check: bool = True,
+    public: bool = False,
+    expected: tuple[int, ...] = (0,),
 ) -> subprocess.CompletedProcess[str]:
     """Run `argv` as the Runner account with its user bus and runtime directory."""
     runtime_dir = f"/run/user/{entry.pw_uid}"
@@ -249,6 +275,8 @@ def run_as(
         ],
         capture=capture,
         check=check,
+        public=public,
+        expected=expected,
     )
 
 
@@ -351,7 +379,7 @@ def reconcile_ca(
         registry_changed = remove_managed_file(registry_certificate, before_change)
         changed = manager_changed or system_trust_changed or registry_changed
     if system_trust_changed or trust_pending.exists():
-        run([platform["trust"], "extract-compat"])
+        run([platform["trust"], "extract-compat"], public=True)
         remove_managed_file(trust_pending)
     return changed
 
@@ -362,7 +390,9 @@ def verify_rootless_podman(
 ) -> None:
     """Raise `RunnerError` unless the account runs rootless Podman 4.2.0+."""
     podman_path = platform["podman"]
-    version_result = run_as(entry, [podman_path, "--version"], platform=platform, capture=True)
+    version_result = run_as(
+        entry, [podman_path, "--version"], platform=platform, capture=True, public=True
+    )
     version_match = re.search(r"(\d+)\.(\d+)\.(\d+)", version_result.stdout)
     if version_match is None or tuple(map(int, version_match.groups())) < (4, 2, 0):
         raise RunnerError("rootless Podman 4.2.0 or newer is required")
@@ -381,7 +411,7 @@ def verify_rootless_podman(
 
 def verify_aardvark(platform: dict[str, str]) -> None:
     """Raise `RunnerError` unless aardvark-dns is newer than 1.10.0."""
-    result = run([platform["aardvarkDns"], "--version"], capture=True)
+    result = run([platform["aardvarkDns"], "--version"], capture=True, public=True)
     version = re.search(r"(\d+)\.(\d+)\.(\d+)", result.stdout + result.stderr)
     if version is None or tuple(map(int, version.groups())) <= (1, 10, 0):
         raise RunnerError("aardvark-dns newer than 1.10.0 is required")
@@ -391,9 +421,12 @@ def health_command(instance: dict[str, Any], platform: dict[str, str]) -> list[s
     """The curl command line that checks the GitLab health URL."""
     command = [
         platform["curl"],
+        "--disable",
         "--fail",
         "--silent",
         "--show-error",
+        "--output",
+        "/dev/null",
         "--connect-timeout",
         "10",
         "--max-time",
@@ -433,7 +466,7 @@ def check_prerequisites(instance: dict[str, Any], platform: dict[str, str]) -> N
     if not Path("/sys/fs/cgroup/cgroup.controllers").is_file():
         raise RunnerError("rootless Podman Runner hosts require cgroup v2")
     verify_aardvark(platform)
-    run(health_command(instance, platform), capture=True)
+    run(health_command(instance, platform), capture=True, public=True)
 
 
 def _check_impl(
@@ -556,8 +589,8 @@ def _prepare_account(
     ensure_subordinate_range(
         paths.subgid, entry.pw_name, account["subGid"], aliases=(str(entry.pw_uid),)
     )
-    run([platform["loginctl"], "enable-linger", entry.pw_name])
-    run([platform["systemctl"], "start", f"user@{entry.pw_uid}.service"])
+    run([platform["loginctl"], "enable-linger", entry.pw_name], public=True)
+    run([platform["systemctl"], "start", f"user@{entry.pw_uid}.service"], public=True)
     wait_for_path(paths.runtime / str(entry.pw_uid) / "bus")
     verify_rootless_podman(entry, platform)
     config_dir, _, unit_dir = ensure_directories(entry)
@@ -627,6 +660,8 @@ def user_systemctl(
         platform=platform,
         capture=query,
         check=not query,
+        public=not query or args[0] == "is-active",
+        expected=(0, 3, 4) if args[0] == "is-active" else (0,),
     )
 
 
@@ -645,6 +680,8 @@ def _ensure_manager_image(
         platform=platform,
         capture=True,
         check=False,
+        public=True,
+        expected=(0, PODMAN_IMAGE_MISSING),
     )
     if exists.returncode == 0:
         return False
@@ -652,7 +689,7 @@ def _ensure_manager_image(
         raise RunnerError("unable to inspect the Runner manager image")
     mark_pending()
     with progress.external_output():
-        run_as(entry, [platform["podman"], "pull", image], platform=platform)
+        run_as(entry, [platform["podman"], "pull", image], platform=platform, public=True)
     return True
 
 
@@ -930,7 +967,7 @@ def _verify_impl(instance: dict[str, Any], platform: dict[str, str], *, progress
             capture=True,
         )
     with progress.task("Checking GitLab health"):
-        run(health_command(instance, platform), capture=True)
+        run(health_command(instance, platform), capture=True, public=True)
     with progress.task("Checking disposable job network"), progress.external_output():
         validate_job_network(instance, platform, entry)
 
@@ -982,7 +1019,7 @@ def _status_impl(
         "XDG_RUNTIME_DIR": runtime_dir,
         "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime_dir}/bus",
     }
-    result = subprocess.run(
+    result = run(
         [
             platform["runuser"],
             "--user",
@@ -994,13 +1031,13 @@ def _status_impl(
             f"{instance['runner']['serviceName']}.service",
         ],
         env=environment,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
+        capture=True,
         check=False,
         timeout=30,
+        public=True,
+        expected=(0, 3, 4),
     )
-    state = result.stdout.strip() or "unavailable"
+    state = diagnostics.redacted(result.stdout.strip()) or "unavailable"
     config_path = Path(entry.pw_dir) / "gitlab-runner/config/config.toml"
     try:
         registered = "present" if "token" in registration_metadata(config_path) else "absent"
