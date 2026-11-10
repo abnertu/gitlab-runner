@@ -4,6 +4,11 @@ Converge dedicated rootless Podman GitLab Runner instances, one system account p
 
 [![Validate](https://github.com/abnertu/gitlab-runner/actions/workflows/validate-runner-controller.yml/badge.svg?branch=main)](https://github.com/abnertu/gitlab-runner/actions/workflows/validate-runner-controller.yml?query=branch%3Amain) [![Python](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fabnertu%2Fgitlab-runner%2Fmain%2Fpyproject.toml&query=%24.project%5B%27requires-python%27%5D&label=Python&logo=python&logoColor=white&color=3776AB)](https://www.python.org/)
 
+![Current machine Runner validation and read-only plans](docs/assets/demo.gif)
+
+Recorded from the current machine. Personal identifiers are redacted; runtime checks remain deferred.
+See the [recording sources](docs/assets/demo/README.md).
+
 ## Install
 
 Requirements:
