@@ -208,13 +208,13 @@ class InspectionCliTests(unittest.TestCase):
 
         return open_public
 
-    def invoke(self, command, *, expected=0, additional=()):
+    def invoke(self, command, *, expected=0, additional=(), json_output=True, tty=False):
         self.command = command
         args = ["runnerctl", "--platform", "arch", "-c", str(self.input)]
         for path in additional:
             args.extend(["-c", str(path)])
-        args.extend([command, "frontend"])
-        if command == "plan":
+        args.extend([command] if command == "validate" else [command, "frontend"])
+        if command == "plan" and json_output:
             args.append("--json")
         stdout, stderr = StringIO(), StringIO()
         with (
@@ -222,6 +222,7 @@ class InspectionCliTests(unittest.TestCase):
             mock.patch.object(builtins, "open", self.guarded_open(builtins.open)),
             mock.patch.object(io, "open", self.guarded_open(io.open)),
             mock.patch.object(os, "open", self.guarded_open(os.open)),
+            mock.patch.object(stdout, "isatty", return_value=tty),
             redirect_stdout(stdout),
             redirect_stderr(stderr),
             self.assertRaises(SystemExit) as exited,
@@ -230,6 +231,23 @@ class InspectionCliTests(unittest.TestCase):
         self.assertEqual(exited.exception.code, expected, stderr.getvalue())
         self.assertNotIn(self.private_marker.decode(), stdout.getvalue() + stderr.getvalue())
         return stdout.getvalue(), stderr.getvalue()
+
+    def test_terminal_colors_preserve_plain_text_and_json_protocols(self):
+        with mock.patch.dict(os.environ, {"TERM": "xterm-256color"}, clear=True):
+            for command in ("validate", "plan"):
+                with self.subTest(command=command):
+                    plain, _ = self.invoke(command, json_output=False)
+                    colored, _ = self.invoke(command, json_output=False, tty=True)
+                    self.assertIn("\033[", colored)
+                    self.assertEqual(re.sub(r"\033\[[0-9;]*m", "", colored), plain)
+                    self.assertNotIn("\033", plain)
+                    for disabled in ({"NO_COLOR": ""}, {"TERM": "dumb"}, {"CI": "1"}):
+                        with mock.patch.dict(os.environ, disabled):
+                            output, _ = self.invoke(command, json_output=False, tty=True)
+                            self.assertEqual(output, plain)
+            output, _ = self.invoke("plan", tty=True)
+            self.assertTrue(json.loads(output))
+            self.assertNotIn("\033", output)
 
     def test_clean_first_install_needs_no_packages_runtime_or_lock(self):
         before = self.snapshot()

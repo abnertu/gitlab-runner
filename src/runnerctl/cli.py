@@ -83,7 +83,7 @@ def _dispatch(args: argparse.Namespace) -> int:
     instances = load_instances(args.config)
     validate_instances(instances)
     if args.command == "validate":
-        print("GitLab Runner configuration is valid")
+        print(diagnostics.styled("GitLab Runner configuration is valid", "1;32"))
         return 0
 
     instance = operations.select_instance(instances, args.instance)

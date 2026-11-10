@@ -15,6 +15,21 @@ _URI_CREDENTIALS = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]+@")
 _PROXY_KEYS = ("http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")
 
 
+def color_enabled() -> bool:
+    """Use colors only for an interactive stdout that permits them."""
+    return (
+        sys.stdout.isatty()
+        and os.environ.get("TERM", "dumb") != "dumb"
+        and "NO_COLOR" not in os.environ
+        and not os.environ.get("CI")
+    )
+
+
+def styled(text: str, code: str) -> str:
+    """Emphasize human output without adding escapes to redirected output."""
+    return f"\033[{code}m{text}\033[0m" if color_enabled() else text
+
+
 @contextmanager
 def configured(*, verbose: bool) -> Generator[None]:
     """Set verbosity for one CLI invocation, restoring the previous setting."""

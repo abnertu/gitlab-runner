@@ -520,7 +520,7 @@ def plan(
     if as_json:
         print(json.dumps([{"kind": change.kind, "text": change.text} for change in changes]))
     else:
-        print(render(changes, f"{instance_name} Runner"))
+        print(render(changes, f"{instance_name} Runner", color=diagnostics.color_enabled()))
 
 
 def _reconcile_impl(

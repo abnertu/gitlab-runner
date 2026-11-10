@@ -86,7 +86,9 @@ Pass every instance file on each call, so that names and IDs are checked across 
 | `status <instance>` | yes | Show the account, sub-IDs, socket, service, container and registration. |
 
 Use `--verbose` before the command to show public native diagnostics on stderr.
-JSON plans remain on stdout.
+Text plans and validation results use colors on terminals.
+Redirected output, `NO_COLOR`, `TERM=dumb` and non-empty `CI` disable these colors.
+JSON plans remain uncolored on stdout.
 Public command failures retain both streams, including partial timeout output.
 Diagnostics omit command arguments and redact authentication tokens, proxy values, and URI credentials.
 Registration, Runner verification, and unrestricted runtime inspection output remain suppressed in both modes.
