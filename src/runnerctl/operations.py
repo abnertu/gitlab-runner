@@ -247,6 +247,23 @@ def _registration_timestamp(value: object) -> str:
     return value.isoformat().replace("+00:00", "Z")
 
 
+def session_environment(
+    entry: pwd.struct_passwd, runtime: Path = DEFAULT_PATHS.runtime
+) -> dict[str, str]:
+    """The Runner account's home, runtime directory and user bus."""
+    runtime_dir = runtime / str(entry.pw_uid)
+    return {
+        "HOME": entry.pw_dir,
+        "XDG_RUNTIME_DIR": str(runtime_dir),
+        "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime_dir}/bus",
+    }
+
+
+def runner_config(entry: pwd.struct_passwd) -> Path:
+    """The manager config inside the Runner account's private directory."""
+    return Path(entry.pw_dir) / "gitlab-runner/config/config.toml"
+
+
 def run_as(
     entry: pwd.struct_passwd,
     argv: list[str],
@@ -258,7 +275,7 @@ def run_as(
     expected: tuple[int, ...] = (0,),
 ) -> subprocess.CompletedProcess[str]:
     """Run `argv` as the Runner account with its user bus and runtime directory."""
-    runtime_dir = f"/run/user/{entry.pw_uid}"
+    session = [f"{name}={value}" for name, value in session_environment(entry).items()]
     return run(
         [
             platform["runuser"],
@@ -268,9 +285,7 @@ def run_as(
             platform["env"],
             "--ignore-environment",
             "PATH=/usr/bin",
-            f"HOME={entry.pw_dir}",
-            f"XDG_RUNTIME_DIR={runtime_dir}",
-            f"DBUS_SESSION_BUS_ADDRESS=unix:path={runtime_dir}/bus",
+            *session,
             *argv,
         ],
         capture=capture,
@@ -731,38 +746,11 @@ def reconcile(
         return _reconcile_impl(instance, platform, paths=paths or DEFAULT_PATHS, progress=current)
 
 
-def _register_impl(
-    instance: dict[str, Any], platform: dict[str, str], *, progress: Progress
-) -> None:
-    require_root()
-    token = os.environ.get("GITLAB_RUNNER_TOKEN", "")
-    if not (token.startswith("glrt-") or token.startswith("glrtr-")):
-        raise RunnerError("GITLAB_RUNNER_TOKEN must contain a Runner authentication token")
-    try:
-        entry = pwd.getpwnam(instance["account"]["user"])
-    except KeyError as error:
-        raise RunnerError("reconcile the Runner instance before registration") from error
-    config_path = Path(entry.pw_dir) / "gitlab-runner/config/config.toml"
-    metadata = registration_metadata(config_path)
-    if "token" in metadata:
-        if metadata["token"] != token:
-            raise RunnerError("the dedicated stack already contains a different registration")
-        reconcile(instance, platform, progress=progress)
-        verify(instance, platform, progress=progress)
-        return
-
-    service_name = instance["runner"]["serviceName"]
-    runtime_dir = f"/run/user/{entry.pw_uid}"
-    registration_env = {
-        "PATH": os.environ.get("PATH", ""),
-        "HOME": entry.pw_dir,
-        "XDG_RUNTIME_DIR": runtime_dir,
-        "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime_dir}/bus",
-        "CI_SERVER_URL": instance["gitlab"]["url"],
-        "CI_SERVER_TOKEN": token,
-        "REGISTER_NON_INTERACTIVE": "true",
-    }
-    command = [
+def registration_command(
+    entry: pwd.struct_passwd, service_name: str, platform: dict[str, str]
+) -> list[str]:
+    """Register inside the manager container; the token stays in the environment."""
+    return [
         platform["runuser"],
         "--preserve-environment",
         "--user",
@@ -782,9 +770,38 @@ def _register_impl(
         "--template-config",
         "/etc/gitlab-runner/registration-template.toml",
     ]
+
+
+def _register_impl(
+    instance: dict[str, Any], platform: dict[str, str], *, progress: Progress
+) -> None:
+    require_root()
+    token = os.environ.get("GITLAB_RUNNER_TOKEN", "")
+    if not (token.startswith("glrt-") or token.startswith("glrtr-")):
+        raise RunnerError("GITLAB_RUNNER_TOKEN must contain a Runner authentication token")
+    try:
+        entry = pwd.getpwnam(instance["account"]["user"])
+    except KeyError as error:
+        raise RunnerError("reconcile the Runner instance before registration") from error
+    metadata = registration_metadata(runner_config(entry))
+    if "token" in metadata:
+        if metadata["token"] != token:
+            raise RunnerError("the dedicated stack already contains a different registration")
+        reconcile(instance, platform, progress=progress)
+        verify(instance, platform, progress=progress)
+        return
+
+    service_name = instance["runner"]["serviceName"]
+    registration_env = {
+        "PATH": os.environ.get("PATH", ""),
+        **session_environment(entry),
+        "CI_SERVER_URL": instance["gitlab"]["url"],
+        "CI_SERVER_TOKEN": token,
+        "REGISTER_NON_INTERACTIVE": "true",
+    }
     with progress.external_output():
         result = subprocess.run(
-            command,
+            registration_command(entry, service_name, platform),
             env=registration_env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -922,12 +939,12 @@ def _verify_impl(instance: dict[str, Any], platform: dict[str, str], *, progress
         entry = pwd.getpwnam(instance["account"]["user"])
         verify_rootless_podman(entry, platform)
         verify_aardvark(platform)
-        socket_path = Path(f"/run/user/{entry.pw_uid}/podman/podman.sock")
+        socket_path = DEFAULT_PATHS.runtime / str(entry.pw_uid) / "podman/podman.sock"
         if not socket_path.exists() or not stat.S_ISSOCK(socket_path.stat().st_mode):
             raise RunnerError(f"rootless Podman socket is unavailable for {entry.pw_name}")
     service_name = instance["runner"]["serviceName"]
     with progress.task("Checking registration and service"):
-        metadata = registration_metadata(Path(entry.pw_dir) / "gitlab-runner/config/config.toml")
+        metadata = registration_metadata(runner_config(entry))
         if "token" not in metadata:
             raise RunnerError("the dedicated Runner stack is not registered")
         run_as(
@@ -1012,13 +1029,7 @@ def _status_impl(
                 "service=unavailable, container=absent, registration=absent"
             )
         return
-    runtime_dir = str(paths.runtime / str(entry.pw_uid))
-    environment = {
-        "PATH": "/usr/bin",
-        "HOME": entry.pw_dir,
-        "XDG_RUNTIME_DIR": runtime_dir,
-        "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime_dir}/bus",
-    }
+    environment = {"PATH": "/usr/bin", **session_environment(entry, paths.runtime)}
     result = run(
         [
             platform["runuser"],
@@ -1038,9 +1049,10 @@ def _status_impl(
         expected=(0, 3, 4),
     )
     state = diagnostics.redacted(result.stdout.strip()) or "unavailable"
-    config_path = Path(entry.pw_dir) / "gitlab-runner/config/config.toml"
     try:
-        registered = "present" if "token" in registration_metadata(config_path) else "absent"
+        registered = (
+            "present" if "token" in registration_metadata(runner_config(entry)) else "absent"
+        )
     except RunnerError:
         registered = "invalid"
     socket_path = paths.runtime / str(entry.pw_uid) / "podman/podman.sock"
