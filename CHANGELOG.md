@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0 (2026-11-10)
+
+### Features
+
+- **inspection**: Add tokenless static previews
+- **retirement**: Retire declared Runner policy explicitly
+- **diagnostics**: Preserve safe native command output
+
+### Fixes
+
+- **status**: Recognize numeric subordinate ID ownership
+
 ## 0.2.0 (2026-11-05)
 
 ### Features
