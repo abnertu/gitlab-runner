@@ -1,4 +1,4 @@
-name: Validate Runner Controller
+name: Validate
 
 on:
   push:
