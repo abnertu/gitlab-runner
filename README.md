@@ -16,7 +16,7 @@ Requirements:
 - Arch Linux, the only supported host platform;
 - Podman 4.2.0 or later, with aardvark-dns later than 1.10.0;
 - systemd with user managers;
-- Python 3.13 or later, and [nix-adapter](https://github.com/abnertu/nix-adapter) 0.8.0 or later.
+- Python 3.13 or later, and [nix-adapter](https://github.com/abnertu/nix-adapter) 0.9.0 or later.
 
 Build it with Nix:
 
@@ -28,7 +28,7 @@ nix build "github:abnertu/gitlab-runner"
 Without Nix, install nix-adapter from its tag first:
 
 ```bash
-pip install git+https://github.com/abnertu/nix-adapter@v0.8.0
+pip install git+https://github.com/abnertu/nix-adapter@v0.9.0
 pip install git+https://github.com/abnertu/gitlab-runner
 ```
 
