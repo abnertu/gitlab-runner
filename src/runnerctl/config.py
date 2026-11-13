@@ -65,6 +65,9 @@ PLATFORMS: dict[str, dict[str, str]] = {
         "useradd": "/usr/bin/useradd",
         "passwd": "/usr/bin/passwd",
         "usermod": "/usr/bin/usermod",
+        "userdel": "/usr/bin/userdel",
+        "groupdel": "/usr/bin/groupdel",
+        "rm": "/usr/bin/rm",
         "runuser": "/usr/bin/runuser",
         "loginctl": "/usr/bin/loginctl",
         "systemctl": "/usr/bin/systemctl",
@@ -83,6 +86,7 @@ class HostPaths:
     runtime: Path = Path("/run/user")
     home_root: Path = Path("/home")
     proc_root: Path = Path("/proc")
+    linger: Path = Path("/var/lib/systemd/linger")
 
 
 def detect_platform(os_release: Path = Path("/etc/os-release")) -> str:

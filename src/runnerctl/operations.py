@@ -61,10 +61,11 @@ def run(
     timeout: float = 300,
     public: bool = False,
     expected: tuple[int, ...] = (0,),
+    input: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a command; report streams only for explicitly public operations.
 
-    Arguments and environment never appear in diagnostics. Sensitive commands
+    Arguments, environment and `input` never appear in diagnostics. Sensitive commands
     retain only an executable/status summary, including in verbose mode.
     """
     if not argv:
@@ -80,6 +81,7 @@ def run(
             capture_output=True,
             env=env,
             timeout=timeout,
+            input=input,
         )
     except subprocess.TimeoutExpired as error:
         message = f"command timed out after {timeout}s: {executable}"
