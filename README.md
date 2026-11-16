@@ -86,6 +86,7 @@ Pass every instance file on each call, so that names and IDs are checked across 
 | `check <instance>` | yes | Check the host prerequisites. |
 | `reconcile <instance>` | yes | Converge the account, sub-IDs, runtime, configuration, image and service. |
 | `purge <instance>` | yes | Retire declared services and public policy; retain registrations and data. |
+| `remove <instance> [--yes] [--keep-gitlab]` | yes | Preview the complete removal of an instance; remove it with `--yes`. |
 | `register <instance>` | yes | Register with GitLab, with the token in `GITLAB_RUNNER_TOKEN`. |
 | `verify <instance>` | yes | Verify the service, manager image, socket and a disposable job network. |
 | `status <instance>` | yes | Show the account, sub-IDs, socket, service, container and registration. |
@@ -128,6 +129,56 @@ Reconciliation refuses unfinished retirement.
 Preflight and plan report its marker without changing it.
 Purge preserves existing `.reconcile.pending` and `.trust.pending` markers.
 Repeated purge checks retired runtime state and reports unchanged.
+
+Run `remove <instance>` to preview the complete removal of an instance.
+The preview lists each removal item, changes nothing and exits with status 1.
+Run `remove <instance> --yes` to remove the instance.
+It prints `<instance>: removed`, or `<instance>: unchanged` when nothing remains.
+Removal does these steps in order:
+
+1. It disables linger, stops the user manager and terminates the sessions of the account.
+2. It kills every process of the Runner UID and its sub-UID range, including running containers.
+3. It deletes the runner in GitLab, and then deletes `config.toml`.
+4. It removes the declared CA copies and refreshes host trust.
+5. It removes both subordinate allocations.
+6. It deletes the account, the linger file, the group and the home.
+
+Step 2 sends SIGTERM first, and SIGKILL after about 15 seconds.
+Removal fails when a process remains after about 30 seconds.
+A retry without the account does step 2 again before the GitLab deletion.
+Removal also completes for a partly provisioned instance, without a user bus, runtime configuration or Podman storage.
+
+Removal refuses these conditions before any change:
+
+- a foreign owner of the account name, the UID, the group or the home;
+- an account home that differs from the declaration;
+- a drifted or overlapping subordinate allocation;
+- a mount at or under the home;
+- a missing host executable for a step that must run;
+- an invalid registration, unless you pass `--keep-gitlab`.
+
+The stored token reaches curl only on stdin.
+A GitLab deletion failure stops removal before any CA, sub-ID, account or home change.
+The token then stays in `config.toml`.
+`--keep-gitlab` skips the GitLab deletion.
+Use it only after you confirm that the runner is gone in GitLab.
+
+Each step is idempotent.
+After a failure, correct the cause.
+Then run `remove <instance> --yes` again.
+Removal can stop after GitLab deletes the runner and before `config.toml` is gone.
+The retry then sends the deleted token, and GitLab rejects it.
+In that case, confirm that the runner is gone in GitLab.
+Then rerun with `--keep-gitlab`.
+Removal can also stop after it removes a CA copy and before the trust refresh.
+The retry refreshes trust while a CA copy remains or the declaration still names the CA.
+If no copy remains and you dropped the CA from the declaration, run `trust extract-compat` by hand.
+With the account gone, removal deletes a leftover group only when its GID equals the declared UID.
+It refuses another leftover group, and a group with members.
+Inspect that group.
+Then run `groupdel` by hand.
+Delete the instance declaration after removal.
+A later `reconcile` of a declared instance creates the account again.
 
 The token never goes on the command line. Read it into the environment, so that it stays out of the shell history:
 

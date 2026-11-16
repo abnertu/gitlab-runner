@@ -6,13 +6,14 @@ gitlab-runnerctl converges dedicated rootless Podman GitLab Runner instances on 
 
 ## Runtime contracts
 
-- Pass the registration token only through `GITLAB_RUNNER_TOKEN`.
+- `register` takes the token only through `GITLAB_RUNNER_TOKEN`.
+- `remove` passes the stored token to curl only on stdin.
 - Keep the token out of argv, logs, progress output and error messages.
 - Use only the lock `/run/lock/runnerctl.lock`, with the label `Runner operation`. Never share a lock with another tool.
 - Keep each instance on its own account, with `concurrent = 1`.
 - Write the pending marker before the first trust, configuration, unit, image or service change of a `reconcile`. Account, sub-ID and user-manager preparation come before it, and they are idempotent.
 - Clear the marker only after the service runs as declared.
-- `reconcile`, `register` and `verify` change live host state. Get the user's go-ahead before you run them on a real host.
+- `reconcile`, `purge`, `remove`, `register` and `verify` change live host state. Get the user's go-ahead before you run them on a real host.
 
 ## Git
 

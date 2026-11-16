@@ -7,6 +7,7 @@ import importlib.metadata
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 from . import diagnostics, operations
 from .config import detect_platform, load_instances, platform_paths
@@ -60,6 +61,7 @@ def parse_args() -> argparse.Namespace:
         "plan",
         "reconcile",
         "purge",
+        "remove",
         "register",
         "verify",
         "status",
@@ -68,6 +70,13 @@ def parse_args() -> argparse.Namespace:
         command_parser.add_argument("instance")
         if command == "plan":
             command_parser.add_argument("--json", action="store_true")
+        if command == "remove":
+            command_parser.add_argument(
+                "--yes", action="store_true", help="remove the instance; without it, only preview"
+            )
+            command_parser.add_argument(
+                "--keep-gitlab", action="store_true", help="leave the runner in GitLab"
+            )
     return parser.parse_args()
 
 
@@ -99,17 +108,29 @@ def _dispatch(args: argparse.Namespace) -> int:
     else:
         operations.require_root()
         with operations.operation_lock():
-            if args.command == "reconcile":
-                changed = operations.reconcile(instance, platform)
-                print(f"{args.instance}: {'changed' if changed else 'unchanged'}")
-            elif args.command == "purge":
-                changed = operations.purge(instance, platform)
-                print(f"{args.instance}: {'changed' if changed else 'unchanged'}")
-            elif args.command == "register":
-                operations.register(instance, platform)
-            elif args.command == "verify":
-                operations.verify(instance, platform)
-                print(f"{args.instance}: verified")
+            return _mutate(args, instance, platform)
+    return 0
+
+
+def _mutate(args: argparse.Namespace, instance: dict[str, Any], platform: dict[str, str]) -> int:
+    if args.command == "reconcile":
+        changed = operations.reconcile(instance, platform)
+        print(f"{args.instance}: {'changed' if changed else 'unchanged'}")
+    elif args.command == "purge":
+        changed = operations.purge(instance, platform)
+        print(f"{args.instance}: {'changed' if changed else 'unchanged'}")
+    elif args.command == "remove":
+        result = operations.remove(
+            args.instance, instance, platform, yes=args.yes, keep_gitlab=args.keep_gitlab
+        )
+        if result == "preview":
+            return 1
+        print(f"{args.instance}: {result}")
+    elif args.command == "register":
+        operations.register(instance, platform)
+    elif args.command == "verify":
+        operations.verify(instance, platform)
+        print(f"{args.instance}: verified")
     return 0
 
 

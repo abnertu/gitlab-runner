@@ -1109,3 +1109,29 @@ def purge(
 
     with progress_task("runnerctl purge", "Retiring Runner", progress):
         return retirement.purge(instance, platform, paths=paths or DEFAULT_PATHS)
+
+
+def remove(
+    name: str,
+    instance: dict[str, Any],
+    platform: dict[str, str],
+    *,
+    paths: HostPaths | None = None,
+    yes: bool,
+    keep_gitlab: bool,
+    sleep: Callable[[float], None] | None = None,
+    signaller: Callable[[int, int, Callable[[int], bool]], None] | None = None,
+) -> Literal["removed", "unchanged", "preview"]:
+    """Remove instance `name` completely; without `yes`, only preview the removal."""
+    from . import removal
+
+    return removal.remove(
+        name,
+        instance,
+        platform,
+        paths=paths or DEFAULT_PATHS,
+        yes=yes,
+        keep_gitlab=keep_gitlab,
+        pause=sleep or removal.sleep,
+        signaller=signaller or removal.signal_process,
+    )
