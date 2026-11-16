@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.0 (2026-11-16)
+
+### Features
+
+- **cli**: Color text plans and validation on terminals
+- **operations**: Pass stdin to native commands and name removal tools
+- **removal**: Remove a Runner instance completely
+
+### Refactoring
+
+- **operations**: Share the Runner session environment
+
+### Documentation
+
+- **demo**: Show real configured runner plans
+
 ## 0.3.0 (2026-11-10)
 
 ### Features
