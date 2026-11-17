@@ -173,8 +173,10 @@ The retry then sends the deleted token, and GitLab rejects it.
 In that case, confirm that the runner is gone in GitLab.
 Then rerun with `--keep-gitlab`.
 Removal can also stop after it removes a CA copy and before the trust refresh.
-The retry refreshes trust while a CA copy remains or the declaration still names the CA.
-If no copy remains and you dropped the CA from the declaration, run `trust extract-compat` by hand.
+The retry refreshes trust while a CA copy remains.
+It also refreshes trust while other instance state remains and the declaration names the CA.
+A retry that prints `unchanged` does no refresh.
+Run `trust extract-compat` by hand in that case, or when you dropped the CA and no copy remains.
 With the account gone, removal deletes a leftover group only when its GID equals the declared UID.
 It refuses another leftover group, and a group with members.
 Inspect that group.
