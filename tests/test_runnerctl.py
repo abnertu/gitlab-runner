@@ -302,6 +302,14 @@ class RunnerControlTests(unittest.TestCase):
         self.assertIn("--ignore-environment", arguments)
         self.assertIn("PATH=/usr/bin", arguments)
 
+    def test_root_commands_keep_the_callers_directory(self) -> None:
+        # A declared CA path can be relative to the instance file, so curl --cacert
+        # must resolve it from the caller's directory.
+        completed = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(self.runnerctl.subprocess, "run", return_value=completed) as native:
+            self.runnerctl.run(["/fixture/curl"], capture=True)
+        self.assertIsNone(native.call_args.kwargs["cwd"])
+
     def test_atomic_write_preserves_an_unchanged_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "managed"
@@ -425,6 +433,8 @@ class RunnerControlTests(unittest.TestCase):
 
             arguments = invoked.call_args.args[0]
             environment = invoked.call_args.kwargs["env"]
+            # The caller's directory can deny the Runner account.
+            self.assertEqual(invoked.call_args.kwargs["cwd"], "/")
             self.assertNotIn(authentication_value, arguments)
             self.assertEqual(environment["CI_SERVER_TOKEN"], authentication_value)
             self.assertNotIn("UNRELATED_SECRET", environment)
@@ -840,6 +850,8 @@ class RunnerStatusTests(unittest.TestCase):
     def native(self, argv, **kwargs):
         self.native_calls.append(argv)
         platform = PLATFORMS["arch"]
+        # Account commands run from `/`: the caller's directory can deny the account.
+        self.assertEqual(kwargs.get("cwd"), "/")
         if platform["systemctl"] in argv:
             self.assertIn("is-active", argv)
             environment = kwargs["env"]

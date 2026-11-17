@@ -51,6 +51,9 @@ PODMAN_IMAGE_MISSING = 1
 CURL_COULD_NOT_RESOLVE = 6
 """curl status for a host name that the resolver did not resolve."""
 
+PULL_TIMEOUT = 1800
+"""Seconds for a command that can pull an image; each Runner account has its own store."""
+
 
 DEFAULT_PATHS = HostPaths()
 
@@ -65,8 +68,11 @@ def run(
     public: bool = False,
     expected: tuple[int, ...] = (0,),
     input: str | None = None,
+    cwd: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a command; report streams only for explicitly public operations.
+
+    `cwd` sets the working directory; `None` keeps the caller's directory.
 
     Arguments, environment and `input` never appear in diagnostics. Sensitive commands
     retain only an executable/status summary, including in verbose mode.
@@ -85,6 +91,7 @@ def run(
             env=env,
             timeout=timeout,
             input=input,
+            cwd=cwd,
         )
     except subprocess.TimeoutExpired as error:
         message = f"command timed out after {timeout}s: {executable}"
@@ -278,8 +285,12 @@ def run_as(
     check: bool = True,
     public: bool = False,
     expected: tuple[int, ...] = (0,),
+    timeout: float = 300,
 ) -> subprocess.CompletedProcess[str]:
-    """Run `argv` as the Runner account with its user bus and runtime directory."""
+    """Run `argv` as the Runner account with its user bus and runtime directory.
+
+    The command runs from `/`: the caller's directory can deny the Runner account.
+    """
     session = [f"{name}={value}" for name, value in session_environment(entry).items()]
     return run(
         [
@@ -297,6 +308,8 @@ def run_as(
         check=check,
         public=public,
         expected=expected,
+        timeout=timeout,
+        cwd="/",
     )
 
 
@@ -709,7 +722,13 @@ def _ensure_manager_image(
         raise RunnerError("unable to inspect the Runner manager image")
     mark_pending()
     with progress.external_output():
-        run_as(entry, [platform["podman"], "pull", image], platform=platform, public=True)
+        run_as(
+            entry,
+            [platform["podman"], "pull", image],
+            platform=platform,
+            public=True,
+            timeout=PULL_TIMEOUT,
+        )
     return True
 
 
@@ -808,6 +827,7 @@ def _register_impl(
         result = subprocess.run(
             registration_command(entry, service_name, platform),
             env=registration_env,
+            cwd="/",
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
@@ -891,11 +911,19 @@ def validate_job_network(
             check=False,
             public=True,
             expected=(0, CURL_COULD_NOT_RESOLVE),
+            timeout=PULL_TIMEOUT,
         )
         if result.returncode == CURL_COULD_NOT_RESOLVE:
             # Some resolvers answer NXDOMAIN to the AAAA query of an IPv4-only name.
             # curl's resolver then fails the lookup, although the A record exists.
-            run_as(entry, [*command, "--ipv4"], platform=platform, capture=True, public=True)
+            run_as(
+                entry,
+                [*command, "--ipv4"],
+                platform=platform,
+                capture=True,
+                public=True,
+                timeout=PULL_TIMEOUT,
+            )
         elif result.returncode != 0:
             raise RunnerError(f"job network check failed with exit code {result.returncode}")
     finally:
@@ -1067,6 +1095,7 @@ def _status_impl(
         timeout=30,
         public=True,
         expected=(0, 3, 4),
+        cwd="/",
     )
     state = diagnostics.redacted(result.stdout.strip()) or "unavailable"
     try:
