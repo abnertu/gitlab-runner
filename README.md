@@ -88,7 +88,7 @@ Pass every instance file on each call, so that names and IDs are checked across 
 | `purge <instance>` | yes | Retire declared services and public policy; retain registrations and data. |
 | `remove <instance> [--yes] [--keep-gitlab]` | yes | Preview the complete removal of an instance; remove it with `--yes`. |
 | `register <instance>` | yes | Register with GitLab, with the token in `GITLAB_RUNNER_TOKEN`. |
-| `verify <instance>` | yes | Verify the service, manager image, socket and a disposable job network. |
+| `verify <instance>` | yes | Verify the service, manager image, socket and a disposable job network. The job network check retries over IPv4 only after a failed lookup and reports that pass. |
 | `status <instance>` | yes | Show the account, sub-IDs, socket, service, container and registration. |
 
 Use `--verbose` before the command to show public native diagnostics on stderr.

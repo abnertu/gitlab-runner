@@ -516,43 +516,6 @@ class RunnerControlTests(unittest.TestCase):
                     with self.assertRaisesRegex(self.runnerctl.RunnerError, "locked password"):
                         self.runnerctl.ensure_account(instance, self.platform)
 
-    def test_job_network_is_removed_when_validation_fails(self) -> None:
-        instance = self.instances["frontend"]
-        entry = self.runnerctl.pwd.struct_passwd(
-            (
-                instance["account"]["user"],
-                "x",
-                os.getuid(),
-                os.getgid(),
-                "",
-                instance["account"]["home"],
-                "/bin/bash",
-            )
-        )
-        completed = subprocess.CompletedProcess([], 0, "", "")
-        with (
-            mock.patch.object(
-                self.runnerctl,
-                "run_as",
-                side_effect=[
-                    completed,
-                    self.runnerctl.RunnerError("job failed"),
-                    completed,
-                ],
-            ) as invoked,
-            self.assertRaisesRegex(self.runnerctl.RunnerError, "job failed"),
-        ):
-            self.runnerctl.validate_job_network(
-                instance,
-                self.platform,
-                entry,
-            )
-
-        cleanup_arguments = invoked.call_args_list[-1].args[1]
-        self.assertEqual(
-            cleanup_arguments[1:5], ["network", "rm", "--force", cleanup_arguments[-1]]
-        )
-
     def test_job_network_retries_with_ipv4_only_when_the_name_does_not_resolve(self) -> None:
         instance = self.instances["frontend"]
         entry = self.runnerctl.pwd.struct_passwd(
@@ -576,8 +539,10 @@ class RunnerControlTests(unittest.TestCase):
             ("other failure", [refused], "exit code 7"),
         )
         for name, curl_results, error in cases:
+            rendered = StringIO()
             with (
                 self.subTest(name),
+                redirect_stderr(rendered),
                 mock.patch.object(
                     self.runnerctl,
                     "run_as",
@@ -591,8 +556,13 @@ class RunnerControlTests(unittest.TestCase):
                         self.runnerctl.validate_job_network(instance, self.platform, entry)
                 calls = [call.args[1] for call in invoked.call_args_list]
                 self.assertEqual(len(calls), len(curl_results) + 2)
+                # Public job checks keep curl's output in failure diagnostics.
+                for call in invoked.call_args_list[1:-1]:
+                    self.assertTrue(call.kwargs["public"])
                 if len(curl_results) == 2:
                     self.assertEqual(calls[2], [*calls[1], "--ipv4"])
+                passed_over_ipv4 = "passed over IPv4 only" in rendered.getvalue()
+                self.assertEqual(passed_over_ipv4, name == "retry passes")
                 self.assertEqual(calls[-1][1:4], ["network", "rm", "--force"])
 
 

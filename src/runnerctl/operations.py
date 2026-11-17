@@ -924,6 +924,7 @@ def validate_job_network(
                 public=True,
                 timeout=PULL_TIMEOUT,
             )
+            diagnostics.emit("job network check passed over IPv4 only; the full lookup failed")
         elif result.returncode != 0:
             raise RunnerError(f"job network check failed with exit code {result.returncode}")
     finally:
