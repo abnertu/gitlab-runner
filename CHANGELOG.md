@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.2 (2026-11-17)
+
+### Fixes
+
+- **operations**: Run account commands from / and extend image pulls
+- **verify**: Report an IPv4-only job network pass
+- **removal**: Wait for zombies and name them in the error
+
+### Documentation
+
+- Follow the gitlab-runnerctl repo rename
+- **removal**: Say when to refresh trust by hand
+
 ## 0.4.1 (2026-11-17)
 
 ### Fixes
