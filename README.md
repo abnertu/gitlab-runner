@@ -2,7 +2,7 @@
 
 Converge dedicated rootless Podman GitLab Runner instances, one system account per instance.
 
-[![Validate](https://github.com/abnertu/gitlab-runner/actions/workflows/validate-runner-controller.yml/badge.svg?branch=main)](https://github.com/abnertu/gitlab-runner/actions/workflows/validate-runner-controller.yml?query=branch%3Amain) [![Python](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fabnertu%2Fgitlab-runner%2Fmain%2Fpyproject.toml&query=%24.project%5B%27requires-python%27%5D&label=Python&logo=python&logoColor=white&color=3776AB)](https://www.python.org/)
+[![Validate](https://github.com/abnertu/gitlab-runnerctl/actions/workflows/validate-runner-controller.yml/badge.svg?branch=main)](https://github.com/abnertu/gitlab-runnerctl/actions/workflows/validate-runner-controller.yml?query=branch%3Amain) [![Python](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fabnertu%2Fgitlab-runnerctl%2Fmain%2Fpyproject.toml&query=%24.project%5B%27requires-python%27%5D&label=Python&logo=python&logoColor=white&color=3776AB)](https://www.python.org/)
 
 ![Current machine Runner validation and read-only plans](docs/assets/demo.gif)
 
@@ -21,7 +21,7 @@ Requirements:
 Build it with Nix:
 
 ```bash
-nix build "github:abnertu/gitlab-runner"
+nix build "github:abnertu/gitlab-runnerctl"
 ./result/bin/runnerctl --version
 ```
 
@@ -29,7 +29,7 @@ Without Nix, install nix-adapter from its tag first:
 
 ```bash
 pip install git+https://github.com/abnertu/nix-adapter@v0.9.0
-pip install git+https://github.com/abnertu/gitlab-runner
+pip install git+https://github.com/abnertu/gitlab-runnerctl
 ```
 
 ## Configure
