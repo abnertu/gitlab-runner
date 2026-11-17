@@ -48,6 +48,9 @@ from .model import (
 PODMAN_IMAGE_MISSING = 1
 """`podman image exists` status for an image that is not present."""
 
+CURL_COULD_NOT_RESOLVE = 6
+"""curl status for a host name that the resolver did not resolve."""
+
 
 DEFAULT_PATHS = HostPaths()
 
@@ -834,7 +837,8 @@ def validate_job_network(
 ) -> None:
     """Raise `RunnerError` unless a job container can resolve and reach GitLab.
 
-    The check uses a temporary Podman network, removed afterwards.
+    The check uses a temporary Podman network, removed afterwards. When the lookup
+    fails, it accepts IPv4-only resolution: one retry asks for the A record alone.
     """
     service_name = instance["runner"]["serviceName"]
     network_name = f"runnerctl-verify-{service_name}-{os.getpid()}"
@@ -879,7 +883,21 @@ def validate_job_network(
         if ca_certificate:
             command.extend(["--cacert", "/tmp/runner-ca.crt"])
         command.append(instance["gitlab"]["healthUrl"])
-        run_as(entry, command, platform=platform, capture=True)
+        result = run_as(
+            entry,
+            command,
+            platform=platform,
+            capture=True,
+            check=False,
+            public=True,
+            expected=(0, CURL_COULD_NOT_RESOLVE),
+        )
+        if result.returncode == CURL_COULD_NOT_RESOLVE:
+            # Some resolvers answer NXDOMAIN to the AAAA query of an IPv4-only name.
+            # curl's resolver then fails the lookup, although the A record exists.
+            run_as(entry, [*command, "--ipv4"], platform=platform, capture=True, public=True)
+        elif result.returncode != 0:
+            raise RunnerError(f"job network check failed with exit code {result.returncode}")
     finally:
         run_as(
             entry,

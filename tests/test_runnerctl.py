@@ -543,6 +543,48 @@ class RunnerControlTests(unittest.TestCase):
             cleanup_arguments[1:5], ["network", "rm", "--force", cleanup_arguments[-1]]
         )
 
+    def test_job_network_retries_with_ipv4_only_when_the_name_does_not_resolve(self) -> None:
+        instance = self.instances["frontend"]
+        entry = self.runnerctl.pwd.struct_passwd(
+            (
+                instance["account"]["user"],
+                "x",
+                os.getuid(),
+                os.getgid(),
+                "",
+                instance["account"]["home"],
+                "/bin/bash",
+            )
+        )
+        completed = subprocess.CompletedProcess([], 0, "", "")
+        unresolved = subprocess.CompletedProcess([], 6, "", "")
+        refused = subprocess.CompletedProcess([], 7, "", "")
+        retry_failure = self.runnerctl.RunnerError("retry failed")
+        cases = (
+            ("retry passes", [unresolved, completed], None),
+            ("retry fails", [unresolved, retry_failure], "retry failed"),
+            ("other failure", [refused], "exit code 7"),
+        )
+        for name, curl_results, error in cases:
+            with (
+                self.subTest(name),
+                mock.patch.object(
+                    self.runnerctl,
+                    "run_as",
+                    side_effect=[completed, *curl_results, completed],
+                ) as invoked,
+            ):
+                if error is None:
+                    self.runnerctl.validate_job_network(instance, self.platform, entry)
+                else:
+                    with self.assertRaisesRegex(self.runnerctl.RunnerError, error):
+                        self.runnerctl.validate_job_network(instance, self.platform, entry)
+                calls = [call.args[1] for call in invoked.call_args_list]
+                self.assertEqual(len(calls), len(curl_results) + 2)
+                if len(curl_results) == 2:
+                    self.assertEqual(calls[2], [*calls[1], "--ipv4"])
+                self.assertEqual(calls[-1][1:4], ["network", "rm", "--force"])
+
 
 class ReconcileTests(unittest.TestCase):
     """Reconcile against a fake host: idempotence, retry and drift handling."""
