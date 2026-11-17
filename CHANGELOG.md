@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1 (2026-11-17)
+
+### Fixes
+
+- **verify**: Retry the job network check over IPv4
+
 ## 0.4.0 (2026-11-16)
 
 ### Features
