@@ -65,6 +65,8 @@ class RetirementCliTests(unittest.TestCase):
             os.chown(runtime / "bus", self.f.uid, self.f.gid)
         self.active = True
         self.socket_active = True
+        # A failing manager leaves its unit "activating" between restarts.
+        self.waiting, self.substate, self.stopped = "", "auto-restart", "inactive"
         self.loaded = True
         self.stale = False
         self.dropins = ""
@@ -157,7 +159,12 @@ class RetirementCliTests(unittest.TestCase):
             "LoadState": "loaded" if present else "not-found",
             "ActiveState": "active"
             if (self.active if is_service else self.socket_active)
+            else self.waiting
+            if is_service and self.waiting
+            else self.stopped
+            if is_service
             else "inactive",
+            "SubState": self.substate if is_service and self.waiting else "dead",
             "FragmentPath": str(self.unit)
             if is_service and present
             else ""
@@ -209,6 +216,7 @@ class RetirementCliTests(unittest.TestCase):
                     self.dropins = self.dropins_after_reload
             elif command == "stop" and args[2] == self.unit.name:
                 self.active = False
+                self.waiting = ""
                 if not self.masked_stop:
                     self.containers.pop(self.name, None)
             elif command == "stop" and args[2] == "podman.socket":
@@ -317,6 +325,86 @@ class RetirementCliTests(unittest.TestCase):
         self.assertEqual(self.f.snapshot(), before)
         self.assertFalse(any(call[1:2] in [("stop",), ("daemon-reload",)] for call in self.calls))
         self.assert_retained()
+
+    def retire_waiting_unit(self, substate, stopped="inactive"):
+        self.active = False
+        self.waiting, self.substate = "activating", substate
+        self.containers.pop(self.name, None)
+        stop = self.native
+
+        def stop_into(entry, argv, **kwargs):
+            # systemd 262 reports inactive after this stop; older versions report failed.
+            result = stop(entry, argv, **kwargs)
+            if argv[1:3] == ["--user", "stop"] and argv[3] == self.unit.name:
+                self.stopped = stopped
+            return result
+
+        operations.run_as.side_effect = stop_into
+        self.f.invoke("purge")
+        self.assertIn(("--user", "stop", self.unit.name), self.calls)
+        self.assertFalse(self.unit.exists())
+        self.assertFalse(self.pending.exists())
+        self.manager.assert_not_called()
+        self.assert_retained()
+        output, _ = self.f.invoke("purge")
+        self.assertIn("unchanged", output)
+
+    def test_unit_that_waits_to_restart_is_stopped_and_retired(self):
+        self.retire_waiting_unit("auto-restart")
+
+    def test_unit_with_a_queued_restart_is_stopped_and_retired(self):
+        self.retire_waiting_unit("auto-restart-queued")
+
+    def test_waiting_unit_that_stops_as_failed_is_retired(self):
+        self.retire_waiting_unit("auto-restart", stopped="failed")
+
+    def test_waiting_unit_with_a_running_manager_is_never_stopped(self):
+        self.active = False
+        self.waiting = "activating"
+        _, error = self.f.invoke("purge", expected=1)
+        self.assertIn("manager runs while its unit waits to restart", error)
+        self.assertFalse(any(call[1:2] == ("stop",) for call in self.calls))
+        self.assertTrue(self.unit.exists())
+
+    def test_unit_that_restarts_before_the_stop_is_never_stopped(self):
+        self.active = False
+        self.waiting = "activating"
+        self.containers.pop(self.name, None)
+        queries = []
+        properties = self.properties
+
+        def restart_on_second_query(unit):
+            values = properties(unit)
+            if unit == self.unit.name and values["ActiveState"] == "activating":
+                queries.append(unit)
+                if len(queries) == 3:
+                    self.waiting, self.substate = "activating", "start"
+                    values = properties(unit)
+            return values
+
+        self.properties = restart_on_second_query
+        _, error = self.f.invoke("purge", expected=1)
+        self.assertIn("restarted during retirement", error)
+        self.assertFalse(any(call[1:2] == ("stop",) for call in self.calls))
+
+    def test_retirement_phase_rejects_a_unit_that_waits_to_restart(self):
+        self.native_failure = lambda args: args == [self.f.platform["trust"], "extract-compat"]
+        self.add_certificates()
+        self.f.invoke("purge", expected=1)
+        self.waiting = "activating"
+        before = self.f.snapshot()
+        _, error = self.f.invoke("purge", expected=1)
+        self.assertIn("has not stopped its service", error)
+        self.assertEqual(self.f.snapshot(), before)
+
+    def test_unit_that_runs_a_start_command_is_never_retired(self):
+        self.active = False
+        self.waiting, self.substate = "activating", "start"
+        before = self.f.snapshot()
+        _, error = self.f.invoke("purge", expected=1)
+        self.assertIn("requires a stable unit state", error)
+        self.assertEqual(self.f.snapshot(), before)
+        self.assertFalse(any(call[1:2] == ("stop",) for call in self.calls))
 
     def test_inactive_service_preserves_named_stopped_container(self):
         self.active = False

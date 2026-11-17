@@ -114,6 +114,10 @@ Run `purge <instance>` to stop declared services and retire their matching publi
 It removes the user unit, enablement links, registration template and declared CA copies.
 It retains accounts, subordinate allocations, images, cache, volumes and the complete runtime configuration.
 Stopping the active service can remove its disposable manager through the existing unit commands.
+Purge also stops a unit that waits to restart after its manager exited.
+It refuses that unit while the manager container still runs, or when the unit restarts first.
+Then run purge again.
+It refuses a unit that runs a start or stop command.
 Stopped containers and unrelated containers remain untouched.
 Purge refuses foreign ownership, policy drift, unsupported unit overrides and a running orphan manager.
 It requires the existing user bus, Podman 4.8 or later, and initialized default overlay storage with SQLite.

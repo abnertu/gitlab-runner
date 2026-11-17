@@ -266,6 +266,7 @@ def _query(context: _Context, unit: str, *, socket: bool = False) -> dict[str, s
     keys = {
         "LoadState",
         "ActiveState",
+        "SubState",
         "FragmentPath",
         "DropInPaths",
         "Names",
@@ -298,10 +299,18 @@ def _query(context: _Context, unit: str, *, socket: bool = False) -> dict[str, s
     return values
 
 
+def _restarting(state: dict[str, str]) -> bool:
+    """Whether systemd waits to restart the unit; no unit process runs then."""
+    return state["ActiveState"] == "activating" and state["SubState"] in {
+        "auto-restart",
+        "auto-restart-queued",
+    }
+
+
 def _loaded(
     state: dict[str, str], unit: str, fragment: Path, *, allow_missing: bool, stale: bool = False
 ) -> None:
-    if state["ActiveState"] not in {"active", "inactive", "failed"}:
+    if state["ActiveState"] not in {"active", "inactive", "failed"} and not _restarting(state):
         raise RunnerError("Runner retirement requires a stable unit state")
     names = state["Names"].split()
     if state["DropInPaths"] or (names != [unit] and (state["LoadState"] != "not-found" or names)):
@@ -363,7 +372,9 @@ def _manager_running(context: _Context) -> bool:
 
 
 def _quiescent(context: _Context, states: tuple[dict[str, str], dict[str, str]]) -> None:
-    if any(state["ActiveState"] == "active" for state in states) or _manager_running(context):
+    if any(
+        state["ActiveState"] == "active" or _restarting(state) for state in states
+    ) or _manager_running(context):
         raise RunnerError("Runner retirement has not stopped its service, socket and manager")
     if any(state["UnitFileState"] == "enabled" for state in states):
         raise RunnerError(
@@ -409,6 +420,18 @@ def _write_intent(context: _Context, intent: RetirementIntent) -> None:
     )
 
 
+def _stop_waiting(context: _Context) -> None:
+    """Stop a service unit that waits to restart; it runs no process."""
+    unit = context.policies["unit"].path.name
+    # The next start removes a leftover manager; stopping first would strand it.
+    if _manager_running(context):
+        raise RunnerError("Runner manager runs while its unit waits to restart; retry purge")
+    # The restart timer can fire after the first query; never stop an unchecked start.
+    if not _restarting(_query(context, unit)):
+        raise RunnerError("Runner unit restarted during retirement; retry purge")
+    operations.user_systemctl(context.entry, context.platform, "stop", unit)
+
+
 def _stop(context: _Context, intent: RetirementIntent) -> None:
     for policy in context.policies.values():
         _check_policy(policy)
@@ -433,6 +456,8 @@ def _stop(context: _Context, intent: RetirementIntent) -> None:
         operations.user_systemctl(
             context.entry, context.platform, "stop", context.policies["unit"].path.name
         )
+    elif _restarting(service):
+        _stop_waiting(context)
     if _manager_running(context):
         raise RunnerError("Runner manager remains running; preserve retirement intent")
     if socket["ActiveState"] == "active":
