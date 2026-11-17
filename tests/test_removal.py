@@ -606,6 +606,40 @@ class RemovalTests(unittest.TestCase):
         self.assertEqual(host.sleeps, removal.POLLS - 1)
         host.assert_absent()
 
+    def test_removal_that_leaves_the_account_never_reports_removed(self):
+        host = self.host()
+        host.inert = {"userdel"}
+        output, error = host.invoke("--yes", expected=1)
+        self.assertNotIn("removed", output)
+        self.assertIn(f"Runner removal left account {host.user}", error)
+
+    def test_a_mount_found_by_the_allocation_recheck_keeps_the_allocations(self):
+        host = self.host()
+        host.after["curl"] = lambda: _mount(host)
+        _, error = host.invoke("--yes", expected=1)
+        self.assertIn("mount under the Runner home", error)
+        self.assertEqual(host.allocations().count(host.user), 2)
+        self.assertIn(host.user, host.accounts)
+
+    def test_a_pending_trust_marker_alone_refreshes_trust(self):
+        host = self.host()
+        host.f.owned(host.config.parent / ".trust.pending", b"", 0o600)
+        output, _ = host.invoke(expected=1)
+        self.assertIn("- refresh host trust\n", output)
+        host.invoke("--yes")
+        self.assertIn("trust", host.tools())
+        host.assert_absent()
+
+    def test_a_gitlab_url_with_a_trailing_slash_deletes_at_the_api_path(self):
+        host = self.host()
+        common = host.f.root / "common.toml"
+        common.write_text(
+            common.read_text().replace('"https://gitlab.example"', '"https://gitlab.example/"')
+        )
+        host.invoke("--yes")
+        curl = next(args for tool, args, _ in host.calls if tool == "curl")
+        self.assertEqual(curl[-1], "https://gitlab.example/api/v4/runners")
+
     def test_kills_processes_that_ignore_sigterm(self):
         host = self.host()
         host.process(700, (host.uid,) * 4)
