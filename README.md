@@ -145,6 +145,8 @@ Removal does these steps in order:
 
 Step 2 sends SIGTERM first, and SIGKILL after about 15 seconds.
 Removal fails when a process remains after about 30 seconds.
+A zombie process remains until its parent reaps it.
+The error names each zombie and its parent PID.
 A retry without the account does step 2 again before the GitLab deletion.
 Removal also completes for a partly provisioned instance, without a user bus, runtime configuration or Podman storage.
 

@@ -294,14 +294,63 @@ def _items(observed: _Observation, *, keep_gitlab: bool) -> list[str]:
     return items
 
 
-def _status_matches(path: Path, wanted: Matcher) -> bool:
-    state, uids = "", list[int]()
+def _status(path: Path) -> dict[str, str]:
+    """The first value of each `/proc` status field."""
+    fields: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        if line.startswith("State:"):
-            state = line.split()[1] if len(line.split()) > 1 else ""
-        elif line.startswith("Uid:"):
-            uids = [int(value) for value in line.split()[1:] if value.isdigit()]
-    return state != "Z" and any(wanted(uid) for uid in uids)
+        name, _, value = line.partition(":")
+        fields[name] = value.strip()
+    return fields
+
+
+def _status_matches(path: Path, wanted: Matcher) -> bool:
+    # A zombie still holds its UID, and `userdel` refuses a busy account.
+    uids = _status(path).get("Uid", "").split()
+    return any(wanted(int(value)) for value in uids if value.isdigit())
+
+
+def _zombie_parent(proc_root: Path, pid: int) -> int | None:
+    """The parent PID of a zombie `pid`, or `None` for a live or vanished process.
+
+    A thread-group leader can exit while its other threads run; that process is live.
+    """
+    base = proc_root / str(pid)
+    try:
+        fields = _status(base / "status")
+        if not fields.get("State", "").startswith("Z"):
+            return None
+        tasks = os.listdir(base / "task")
+    except _VANISHED:
+        return None
+    for task in tasks:
+        try:
+            if not _status(base / "task" / task / "status").get("State", "").startswith("Z"):
+                return None
+        except _VANISHED:
+            continue
+    parent = fields.get("PPid", "")
+    return int(parent) if parent.isdigit() else None
+
+
+def _raise_remaining(observed: _Observation, pids: list[int], what: str) -> None:
+    """Fail for the processes of `pids` that still exist; name each zombie with its parent.
+
+    A PID that exited after the scan, or now belongs to another process, is left out.
+    With none left, nothing fails.
+    """
+    matches = _matcher(observed)
+    pids = [pid for pid in pids if matches(pid)]
+    if not pids:
+        return
+    message = f"{len(pids)} processes of {observed.user} {what}"
+    zombies = [
+        f"{pid} (parent {parent})"
+        for pid in pids
+        if (parent := _zombie_parent(observed.paths.proc_root, pid)) is not None
+    ]
+    if zombies:
+        message += f"; zombies {', '.join(zombies)} wait for their parents to reap them"
+    raise RunnerError(message)
 
 
 def _process_matches(proc_root: Path, pid: int, wanted: Matcher) -> bool:
@@ -358,7 +407,7 @@ def _terminate(
         if poll >= POLLS // 2:
             for pid in pending:
                 signaller(pid, signal.SIGKILL, matches)
-    raise RunnerError(f"{len(pending)} processes of {observed.user} did not exit")
+    _raise_remaining(observed, pending, "did not exit")
 
 
 def _stop(observed: _Observation, pause: Callable[[float], None], signaller: Signaller) -> None:
@@ -415,9 +464,7 @@ def _remove_trust(observed: _Observation) -> None:
 
 def _remove_allocations(observed: _Observation) -> None:
     _mounted(observed.paths, observed.home)
-    remaining = _scan(observed, _matcher(observed))
-    if remaining:
-        raise RunnerError(f"{len(remaining)} processes of {observed.user} are still running")
+    _raise_remaining(observed, _scan(observed, _matcher(observed)), "are still running")
     account = observed.instance["account"]
     for attribute, key in _SUBORDINATE:
         path: Path = getattr(observed.paths, attribute)

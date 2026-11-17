@@ -71,6 +71,10 @@ class Host:
         self.signals: list[tuple[int, int]] = []
         self.sleeps = 0
         self.locked = 0
+        # Host changes that happen at a point in time: on the next poll, or after a tool runs.
+        self.on_sleep: list = []
+        self.after: dict = {}
+        self.inert: set[str] = set()
         self.patch()
 
     def patch(self):
@@ -137,17 +141,19 @@ class Host:
             self.copies.append(path)
             self.root_owned.add(path)
 
-    def process(self, pid, uids, *, state="S", tasks=None):
-        def status(path, values):
+    def process(self, pid, uids, *, state="S", tasks=None, ppid=1, task_state=None):
+        def status(path, values, current):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(
-                f"Name:\tfixture\nState:\t{state} (fixture)\n"
+                f"Name:\tfixture\nState:\t{current} (fixture)\nPPid:\t{ppid}\n"
                 f"Uid:\t{values[0]}\t{values[1]}\t{values[2]}\t{values[3]}\n"
             )
 
-        status(self.proc / str(pid) / "status", uids)
-        for task, values in (tasks or {}).items():
-            status(self.proc / str(pid) / "task" / str(task) / "status", values)
+        status(self.proc / str(pid) / "status", uids, state)
+        for task, values in (tasks or {pid: uids}).items():
+            status(
+                self.proc / str(pid) / "task" / str(task) / "status", values, task_state or state
+            )
 
     def lock(self):
         self.locked += 1
@@ -163,6 +169,8 @@ class Host:
     def sleep(self, seconds):
         self.case.assertEqual(seconds, 1)
         self.sleeps += 1
+        while self.on_sleep:
+            self.on_sleep.pop(0)()
 
     def signal(self, pid, sig, matches):
         self.case.assertTrue(matches(pid))
@@ -170,12 +178,23 @@ class Host:
         if sig in self.fatal.get(pid, {signal.SIGTERM, signal.SIGKILL}):
             shutil.rmtree(self.proc / str(pid))
 
+    def intercept(self, tool, argv):
+        """Apply a failure, a timed host change or an inert result for `tool`."""
+        if tool in self.failing:
+            raise operations.RunnerError(f"command failed with exit code 1: {tool}")
+        if tool in self.after:
+            self.after.pop(tool)()
+        if tool in self.inert:
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        return None
+
     def run(self, argv, **kwargs):
         tool = Path(argv[0]).name
         self.case.assertEqual(argv[0], self.platform[tool])
         self.calls.append((tool, argv[1:], kwargs))
-        if tool in self.failing:
-            raise operations.RunnerError(f"command failed with exit code 1: {tool}")
+        intercepted = self.intercept(tool, argv)
+        if intercepted is not None:
+            return intercepted
         if tool == "loginctl" and argv[1] == "disable-linger":
             self.linger.unlink(missing_ok=True)
         elif tool == "loginctl":
@@ -507,11 +526,85 @@ class RemovalTests(unittest.TestCase):
         (host.proc / "uptime").write_text("")
         output, _ = host.invoke("--yes")
         self.assertEqual(output, "frontend: removed\n")
+        # The zombie 705 counts until its parent reaps it; the fixture reaps on SIGTERM.
         self.assertEqual(
-            sorted(host.signals), [(pid, signal.SIGTERM) for pid in (700, 701, 702, 703, 704)]
+            sorted(host.signals), [(pid, signal.SIGTERM) for pid in (700, 701, 702, 703, 704, 705)]
         )
         self.assertEqual(host.sleeps, 0)
         self.assertTrue((host.proc / "706").is_dir())
+
+    def test_waits_for_a_zombie_until_its_parent_reaps_it(self):
+        host = self.host()
+        host.process(705, (host.uid,) * 4, state="Z", ppid=4242)
+        # Signals cannot end a zombie; only its parent's wait removes it.
+        host.fatal[705] = set()
+        host.on_sleep.append(lambda: shutil.rmtree(host.proc / "705"))
+        output, _ = host.invoke("--yes")
+        self.assertEqual(output, "frontend: removed\n")
+        self.assertEqual(host.sleeps, 1)
+        host.assert_absent()
+
+    def test_a_zombie_that_stays_stops_removal_before_gitlab_and_names_its_parent(self):
+        host = self.host()
+        host.process(705, (165536,) * 4, state="Z", ppid=4242)
+        host.process(706, (host.uid,) * 4)
+        for pid in (705, 706):
+            host.fatal[pid] = set()
+        _, error = host.invoke("--yes", expected=1)
+        self.assertIn(f"2 processes of {host.user} did not exit", error)
+        self.assertIn("zombies 705 (parent 4242) wait for their parents", error)
+        self.assertNotIn("706 (parent", error)
+        self.assertNotIn("curl", host.tools())
+        self.assertTrue(host.config.is_file())
+        self.assertIn(host.user, host.accounts)
+        self.assertTrue(host.home.is_dir())
+        self.assertEqual(host.allocations().count(host.user), 2)
+
+    def test_a_zombie_found_by_the_allocation_recheck_is_named(self):
+        host = self.host()
+        host.after["curl"] = lambda: host.process(705, (host.uid,) * 4, state="Z", ppid=4242)
+        _, error = host.invoke("--yes", expected=1)
+        self.assertIn(f"1 processes of {host.user} are still running", error)
+        self.assertIn("zombies 705 (parent 4242)", error)
+        self.assertEqual(host.allocations().count(host.user), 2)
+
+    def test_only_a_zombie_without_live_threads_is_named_a_zombie(self):
+        host = self.host()
+        observed = removal._observe(host.f.instance, host.platform, host.paths)
+        host.process(705, (host.uid,) * 4, state="Z", ppid=4242)
+        # A thread-group leader that exited while another thread runs is a live process.
+        host.process(711, (host.uid,) * 4, state="Z", ppid=4242)
+        host.process(713, (host.uid,) * 4, state="D")
+        shutil.move(host.proc / "713/task/713", host.proc / "711/task/713")
+        shutil.rmtree(host.proc / "713")
+        host.process(712, (host.uid,) * 4)
+        # 999 vanished between the scan and the message.
+        with self.assertRaises(operations.RunnerError) as failed:
+            removal._raise_remaining(observed, [705, 711, 712, 999], "did not exit")
+        message = str(failed.exception)
+        self.assertTrue(message.startswith(f"3 processes of {host.user} did not exit"))
+        self.assertIn("zombies 705 (parent 4242) wait", message)
+        for pid in ("711", "712", "999"):
+            self.assertNotIn(f"{pid} (parent", message)
+
+    def test_processes_that_exit_after_the_last_poll_do_not_fail_removal(self):
+        host = self.host()
+        host.process(700, (host.uid,) * 4)
+        host.fatal[700] = set()
+        signals = []
+        signaller = removal.signal_process.side_effect
+
+        def last_kill_ends_it(pid, sig, matches):
+            signaller(pid, sig, matches)
+            signals.append(sig)
+            if signals.count(signal.SIGKILL) == removal.POLLS // 2:
+                shutil.rmtree(host.proc / str(pid))
+
+        removal.signal_process.side_effect = last_kill_ends_it
+        output, _ = host.invoke("--yes")
+        self.assertEqual(output, "frontend: removed\n")
+        self.assertEqual(host.sleeps, removal.POLLS - 1)
+        host.assert_absent()
 
     def test_kills_processes_that_ignore_sigterm(self):
         host = self.host()
