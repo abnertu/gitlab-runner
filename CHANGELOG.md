@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.3 (2026-11-17)
+
+### Fixes
+
+- **retirement**: Stop a unit that waits to restart
+
 ## 0.4.2 (2026-11-17)
 
 ### Fixes
